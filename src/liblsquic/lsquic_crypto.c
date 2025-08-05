@@ -7,9 +7,9 @@
 #include <openssl/stack.h>
 #include <openssl/x509.h>
 #include <openssl/rand.h>
-#include <openssl/curve25519.h>
-#include <openssl/hkdf.h>
 #include <openssl/hmac.h>
+#include <openssl/kdf.h>
+#include <openssl/core_names.h>
 
 #include <zlib.h>
 #ifdef WIN32
@@ -169,10 +169,23 @@ void lsquic_serialize_fnv128_short(uint128 v, uint8_t *md)
 
 static void sha256(const uint8_t *buf, int len, uint8_t *h)
 {
-    SHA256_CTX ctx;
-    SHA256_Init(&ctx);
-    SHA256_Update(&ctx, buf, len);
-    SHA256_Final(h, &ctx);
+    EVP_MD *md = EVP_MD_fetch(NULL, "SHA256", NULL);
+    EVP_MD_CTX *ctx = EVP_MD_CTX_new();
+
+    if (md == NULL || ctx == NULL)
+        goto out;
+    
+    if (!EVP_DigestInit(ctx, md))
+        goto out;
+
+    if (!EVP_DigestUpdate(ctx, buf, len))
+        goto out;
+
+    if (!EVP_DigestFinal(ctx, h, NULL))
+        goto out;
+out:
+    EVP_MD_CTX_free(ctx);
+    EVP_MD_free(md);
 }
 
 
@@ -218,14 +231,28 @@ int lshkdf_expand(const unsigned char *prk, const unsigned char *info, int info_
       + 32                      /* Subkey */
       + EVP_MAX_KEY_LENGTH * 2  /* Header protection */
     ];
+    int kdf_mode = EVP_KDF_HKDF_MODE_EXPAND_ONLY;
+    EVP_KDF *kdf = EVP_KDF_fetch(NULL, "HKDF", NULL);
+    EVP_KDF_CTX *kctx = EVP_KDF_CTX_new(kdf);
+    OSSL_PARAM params[5], *pp = params;
+
+    EVP_KDF_free(kdf);
 
     assert((size_t) L <= sizeof(output));
 
-#ifndef NDEBUG
-    const int s =
-#endif
-    HKDF_expand(output, L, EVP_sha256(), prk, 32, info, info_len);
-    assert(s);
+    *pp++ = OSSL_PARAM_construct_int(OSSL_KDF_PARAM_MODE, &kdf_mode);
+
+    *pp++ = OSSL_PARAM_construct_utf8_string(OSSL_KDF_PARAM_DIGEST, SN_sha256, strlen(SN_sha256));
+
+    *pp++ = OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_KEY, (uint8_t *)prk, 32);
+
+    *pp++ = OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_INFO, (uint8_t *)info, info_len);
+
+    *pp = OSSL_PARAM_construct_end();
+
+    if (EVP_KDF_derive(kctx, output, L, params) <= 0)
+        goto out;
+
     p = output;
     if (c_key_len)
     {
@@ -262,6 +289,8 @@ int lshkdf_expand(const unsigned char *prk, const unsigned char *info, int info_
         memcpy(s_hp, p, s_key_len);
         p += s_key_len;
     }
+out:
+    EVP_KDF_CTX_free(kctx);
     return 0;
 }
 
@@ -318,81 +347,123 @@ lsquic_export_key_material(const unsigned char *ikm, uint32_t ikm_len,
 
 void lsquic_c255_get_pub_key(unsigned char *priv_key, unsigned char pub_key[32])
 {
-    X25519_public_from_private(pub_key, priv_key);
+    size_t len = 32;
+    EVP_PKEY *pkey = EVP_PKEY_new_raw_private_key_ex(NULL, "X25519", NULL,
+                                                     priv_key, 32);
+    if (pkey == NULL)
+        return;
+    EVP_PKEY_get_raw_public_key(pkey, pub_key, &len);
 }
 
 
 int lsquic_c255_gen_share_key(unsigned char *priv_key, unsigned char *peer_pub_key, unsigned char *shared_key)
 {
-    return X25519(shared_key, priv_key, peer_pub_key);
+    EVP_PKEY *my_key = EVP_PKEY_new_raw_private_key_ex(NULL, "X25519", NULL,
+                                                         priv_key, 32);
+    EVP_PKEY *peer_key = EVP_PKEY_new_raw_public_key_ex(NULL, "X25519", NULL,
+                                                        peer_pub_key, 32);
+    EVP_PKEY_CTX *pctx = NULL;
+    int ret = 0;
+    size_t shared_secret_len = 32;
+
+    if (peer_key == NULL || my_key == NULL)
+        goto err;
+
+    pctx = EVP_PKEY_CTX_new(my_key, NULL);
+    if (pctx == NULL)
+        goto err; 
+
+    if (!EVP_PKEY_derive_init(pctx))
+        goto err;
+
+    if (!EVP_PKEY_derive_set_peer(pctx, peer_key))
+        goto err;
+
+    if (!EVP_PKEY_derive(pctx, shared_key, &shared_secret_len))
+        goto err;
+
+    ret = 1;
+err:
+    EVP_PKEY_CTX_free(pctx);
+    EVP_PKEY_free(my_key);
+    EVP_PKEY_free(peer_key);
+    return ret;
 }
 
 
 
 /* AEAD nonce is always zero */
 /* return 0 for OK */
-int lsquic_aes_aead_enc(EVP_AEAD_CTX *key,
+int lsquic_aes_aead_enc(EVP_CIPHER_CTX *key,
               const uint8_t *ad, size_t ad_len,
               const uint8_t *nonce, size_t nonce_len, 
               const uint8_t *plain, size_t plain_len,
               uint8_t *cypher, size_t *cypher_len)
 {
-    int ret = 0;
-    size_t max_out_len;
-    max_out_len = *cypher_len;//plain_len + EVP_AEAD_max_overhead(aead_);
-    assert(*cypher_len >= max_out_len);
+    int max_out_len;
+    int total_len = 0;
 
     LSQ_DEBUG("***lsquic_aes_aead_enc data %s", lsquic_get_bin_str(plain, plain_len, 40));
-    ret = EVP_AEAD_CTX_seal(key, cypher, cypher_len, max_out_len, 
-                            nonce, nonce_len, plain, plain_len, ad, ad_len);
-//     LSQ_DEBUG("***lsquic_aes_aead_enc nonce: %s", lsquic_get_bin_str(nonce, nonce_len));
-//     LSQ_DEBUG("***lsquic_aes_aead_enc AD: %s", lsquic_get_bin_str(ad, ad_len));
-//     LSQ_DEBUG("***lsquic_aes_aead_enc return %d", (ret ? 0 : -1));
-    if (ret)
-    {
-        LSQ_DEBUG("***lsquic_aes_aead_enc succeed, cypher content %s",
-                  lsquic_get_bin_str(cypher, *cypher_len, 40));
-        return 0;
-    }
-    else
-    {
-        LSQ_DEBUG("***lsquic_aes_aead_enc failed.");
+    if (EVP_CIPHER_CTX_ctrl(key, EVP_CTRL_GCM_SET_IVLEN, nonce_len, NULL))
         return -1;
-    }
+
+    if (!EVP_EncryptInit_ex(key, NULL, NULL, NULL, nonce))
+        return -1;
+
+    if (!EVP_EncryptUpdate(key, NULL, &max_out_len, ad, ad_len))
+        return -1;
+
+    if (!EVP_EncryptUpdate(key, cypher, &max_out_len, plain, plain_len))
+        return -1;
+
+    total_len = max_out_len;
+
+    if (!EVP_EncryptFinal_ex(key, cypher + max_out_len, &max_out_len))
+        return -1;
+
+    total_len += max_out_len;
+
+    if (!EVP_CIPHER_CTX_ctrl(key, EVP_CTRL_GCM_GET_TAG, EVP_GCM_TLS_TAG_LEN, cypher + total_len))
+        return -1;
+
+    LSQ_DEBUG("***lsquic_aes_aead_enc succeed, cypher content %s",
+              lsquic_get_bin_str(cypher, *cypher_len, 40));
+    return 0;
 }
 
 
 /* return 0 for OK */
-int lsquic_aes_aead_dec(EVP_AEAD_CTX *key,
+int lsquic_aes_aead_dec(EVP_CIPHER_CTX *key,
               const uint8_t *ad, size_t ad_len,
               const uint8_t *nonce, size_t nonce_len, 
               const uint8_t *cypher, size_t cypher_len,
               uint8_t *plain, size_t *plain_len)
 {
-    int ret = 0;
-    size_t max_out_len = *plain_len;
-    assert(max_out_len >= cypher_len);
+    int len = 0;
+    size_t tag_offset = cypher_len - EVP_GCM_TLS_TAG_LEN;
 
     LSQ_DEBUG("***lsquic_aes_aead_dec data %s", lsquic_get_bin_str(cypher, cypher_len, 40));
 
-    
-    ret = EVP_AEAD_CTX_open(key, plain, plain_len, max_out_len,
-                            nonce, nonce_len, cypher, cypher_len, ad, ad_len);
-    
-//    LSQ_DEBUG("***lsquic_aes_aead_dec nonce: %s", lsquic_get_bin_str(nonce, nonce_len));
-//    LSQ_DEBUG("***lsquic_aes_aead_dec AD: %s", lsquic_get_bin_str(ad, ad_len));
-//    LSQ_DEBUG("***lsquic_aes_aead_dec return %d", (ret ? 0 : -1));
-    if (ret)
-    {
-        LSQ_DEBUG("***lsquic_aes_aead_dec succeed, plain content %s",
-              lsquic_get_bin_str(plain, *plain_len, 20));
-        return 0;
-    }
-    else
-    {
-        LSQ_DEBUG("***lsquic_aes_aead_dec failed.");
+    if (!EVP_DecryptInit_ex(key, NULL, NULL, NULL, nonce))
         return -1;
-    }
+
+    if (!EVP_DecryptUpdate(key, NULL, &len, ad, ad_len))
+        return -1;
+    
+    if (!EVP_DecryptUpdate(key, plain, &len, cypher, cypher_len))
+        return -1;
+
+    if (!EVP_CIPHER_CTX_ctrl(key, EVP_CTRL_GCM_SET_TAG, EVP_GCM_TLS_TAG_LEN,
+                             (unsigned char *)cypher + tag_offset))
+        return -1;
+
+    if (EVP_DecryptFinal_ex(key, plain + len, &len))
+        return -1;
+
+    *plain_len = len;
+    LSQ_DEBUG("***lsquic_aes_aead_dec succeed, plain content %s",
+          lsquic_get_bin_str(plain, *plain_len, 20));
+    return 0;
 }
 
 /* 32 bytes client nonce with 4 bytes tm, 8 bytes orbit */
@@ -434,37 +505,43 @@ lsquic_gen_prof (const uint8_t *chlo_data, size_t chlo_data_len,
 {
     uint8_t chlo_hash[32] = {0};
     size_t chlo_hash_len = 32; /* SHA256 */
-    EVP_MD_CTX sign_context;
+    EVP_MD_CTX *sign_context = EVP_MD_CTX_new();
     EVP_PKEY_CTX* pkey_ctx = NULL;
-    
-    sha256(chlo_data, chlo_data_len, chlo_hash);
-    EVP_MD_CTX_init(&sign_context);
-    if (!EVP_DigestSignInit(&sign_context, &pkey_ctx, EVP_sha256(), NULL, (EVP_PKEY *)priv_key))
+    int ret = -1;
+
+    if (sign_context == NULL)
         return -1;
+
+    sha256(chlo_data, chlo_data_len, chlo_hash);
+    if (!EVP_DigestSignInit(sign_context, &pkey_ctx, EVP_sha256(), NULL, (EVP_PKEY *)priv_key))
+        goto err;
     
     EVP_PKEY_CTX_set_rsa_padding(pkey_ctx, RSA_PKCS1_PSS_PADDING);
     EVP_PKEY_CTX_set_rsa_pss_saltlen(pkey_ctx, -1);
     
-    if (!EVP_DigestSignUpdate(&sign_context, s_hs_signature, sizeof(s_hs_signature)) ||
-        !EVP_DigestSignUpdate(&sign_context, (const uint8_t*)(&chlo_hash_len), 4) ||
-        !EVP_DigestSignUpdate(&sign_context, chlo_hash, chlo_hash_len) ||
-        !EVP_DigestSignUpdate(&sign_context, scfg_data, scfg_data_len))
+    if (!EVP_DigestSignUpdate(sign_context, s_hs_signature, sizeof(s_hs_signature)) ||
+        !EVP_DigestSignUpdate(sign_context, (const uint8_t*)(&chlo_hash_len), 4) ||
+        !EVP_DigestSignUpdate(sign_context, chlo_hash, chlo_hash_len) ||
+        !EVP_DigestSignUpdate(sign_context, scfg_data, scfg_data_len))
     {
-        return -1;
+        goto err;
     }
     
     size_t len = 0;
-    if (!EVP_DigestSignFinal(&sign_context, NULL, &len)) {
-        return -1;
+    if (!EVP_DigestSignFinal(sign_context, NULL, &len)) {
+        goto err;
     }
 
+    ret = -2;
     if (len > *buf_len)
-        return -2;
+        goto err;
     if (buf)
-        EVP_DigestSignFinal(&sign_context, buf, buf_len);
+        EVP_DigestSignFinal(sign_context, buf, buf_len);
     
-    EVP_MD_CTX_cleanup(&sign_context);
-    return 0;
+    ret = 0;
+err:
+    EVP_MD_CTX_free(sign_context);
+    return ret;
 }
 
 
@@ -476,35 +553,40 @@ verify_prof0 (const uint8_t *chlo_data, size_t chlo_data_len,
 {
     uint8_t chlo_hash[32] = {0};
     size_t chlo_hash_len = 32; /* SHA256 */
-    EVP_MD_CTX sign_context;
+    EVP_MD_CTX *sign_context = EVP_MD_CTX_new();
     EVP_PKEY_CTX* pkey_ctx = NULL;
-    int ret = 0;
-    EVP_MD_CTX_init(&sign_context);
+    int ret = -4;
+
+    if (sign_context == NULL)
+        return -1;
+
     sha256(chlo_data, chlo_data_len, chlo_hash);
     
     // discarding const below to quiet compiler warning on call to ssl library code
-    if (!EVP_DigestVerifyInit(&sign_context, &pkey_ctx, EVP_sha256(), NULL, (EVP_PKEY *)pub_key))
-        return -4;
+    if (!EVP_DigestVerifyInit(sign_context, &pkey_ctx, EVP_sha256(), NULL, (EVP_PKEY *)pub_key))
+        goto err;
     
     EVP_PKEY_CTX_set_rsa_padding(pkey_ctx, RSA_PKCS1_PSS_PADDING);
     EVP_PKEY_CTX_set_rsa_pss_saltlen(pkey_ctx, -1);
     
-    
-    if (!EVP_DigestVerifyUpdate(&sign_context, s_hs_signature, sizeof(s_hs_signature)) ||
-        !EVP_DigestVerifyUpdate(&sign_context, (const uint8_t*)(&chlo_hash_len), 4) ||
-        !EVP_DigestVerifyUpdate(&sign_context, chlo_hash, chlo_hash_len) ||
-        !EVP_DigestVerifyUpdate(&sign_context, scfg_data, scfg_data_len))
+    ret = -3; 
+    if (!EVP_DigestVerifyUpdate(sign_context, s_hs_signature, sizeof(s_hs_signature)) ||
+        !EVP_DigestVerifyUpdate(sign_context, (const uint8_t*)(&chlo_hash_len), 4) ||
+        !EVP_DigestVerifyUpdate(sign_context, chlo_hash, chlo_hash_len) ||
+        !EVP_DigestVerifyUpdate(sign_context, scfg_data, scfg_data_len))
     {
-        return -3;  /* set to -3, to avoid same as "not enough data" -2 */
+        goto err;  /* set to -3, to avoid same as "not enough data" -2 */
     }
     
-    ret = EVP_DigestVerifyFinal(&sign_context, buf, len);
-    EVP_MD_CTX_cleanup(&sign_context);
+    ret = EVP_DigestVerifyFinal(sign_context, buf, len);
     
     if (ret == 1)
-        return 0; //OK
+        ret = 0; //OK
     else
-        return -1;  //failed
+        ret = -1;  //failed
+err:
+    EVP_MD_CTX_free(sign_context);
+    return ret;
 }
 
 
@@ -525,7 +607,7 @@ lsquic_crypto_init (void)
         return ;
     
     //SSL_library_init();
-    CRYPTO_library_init();
+    OPENSSL_init_ssl(0, NULL);
     /* XXX Should we seed? If yes, wherewith? */ // RAND_seed(seed, seed_len);
     
 #if defined( __x86_64 )||defined( __x86_64__ )

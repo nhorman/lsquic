@@ -17,7 +17,6 @@ SET(lsquic_STAT_SRCS
     lsquic_di_hash.c
     lsquic_di_nocopy.c
     lsquic_enc_sess_common.c
-    lsquic_enc_sess_ietf.c
     lsquic_eng_hist.c
     lsquic_engine.c
     lsquic_ev_log.c
@@ -84,9 +83,9 @@ SET(lsquic_STAT_SRCS
 )
 
 IF ("${QUIC_TLS_LIB}" STREQUAL "BORINGSSL")
-    list(APPEND lsquic_STAT_SRCS lsquic_crypto_boringssl.c)
+    list(APPEND lsquic_STAT_SRCS lsquic_crypto_boringssl.c lsquic_enc_sess_ietf_boringssl.c)
 ELSE()
-    list(APPEND lsquic_STAT_SRCS lsquic_crypto_openssl.c)
+    list(APPEND lsquic_STAT_SRCS lsquic_crypto_openssl.c lsquic_enc_sess_ietf_openssl.c)
 ENDIF()
 IF(NOT MSVC)
     SET(QPACK_FLAGS "-Wno-uninitialized")

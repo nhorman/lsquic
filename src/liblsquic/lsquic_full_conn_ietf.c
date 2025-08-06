@@ -14,7 +14,12 @@
 #include <string.h>
 #include <sys/queue.h>
 
+#ifdef HAVE_BORING_SSL
 #include <openssl/aead.h>
+#else
+#include <openssl/evp.h>
+#endif
+
 #include <openssl/rand.h>
 
 #include "fiu-local.h"
@@ -7237,9 +7242,14 @@ verify_retry_packet (struct ietf_full_conn *conn,
                                     const struct lsquic_packet_in *packet_in)
 {
     unsigned char *pseudo_packet;
-    size_t out_len, ad_len;
+#ifdef HAVE_BORINGSSL
+    size_t out_len = 0
+#endif
+    size_t ad_len;
     unsigned ret_ver;
     int verified;
+    int len = 0;
+    int tag_offset = packet_in->pi_data_sz - 16;
 
     if (1 + CUR_DCID(conn)->len + packet_in->pi_data_sz > 0x1000)
     {
@@ -7264,15 +7274,31 @@ verify_retry_packet (struct ietf_full_conn *conn,
                                                     packet_in->pi_data_sz);
 
     ret_ver = lsquic_version_2_retryver(conn->ifc_conn.cn_version);
-    out_len = 0;
     ad_len = 1 + CUR_DCID(conn)->len + packet_in->pi_data_sz - 16;
+#ifdef HAVE_BORINGSSL
     verified = 1 == EVP_AEAD_CTX_open(
                     &conn->ifc_enpub->enp_retry_aead_ctx[ret_ver],
                     pseudo_packet + ad_len, &out_len, out_len,
                     lsquic_retry_nonce_buf[ret_ver], IETF_RETRY_NONCE_SZ,
                     pseudo_packet + ad_len, 16, pseudo_packet, ad_len)
             && out_len == 0;
-
+#else
+    if (!EVP_DecryptInit_ex(conn->ifc_enpub->enp_retry_aead_ctx[ret_ver], NULL, NULL, NULL,
+                           lsquic_retry_nonce_buf[ret_ver]))
+        return -1;
+    if (!EVP_DecryptUpdate(conn->ifc_enpub->enp_retry_aead_ctx[ret_ver], NULL, &len,
+                           pseudo_packet, ad_len))
+        return -1;
+    if (!EVP_DecryptUpdate(conn->ifc_enpub->enp_retry_aead_ctx[ret_ver], pseudo_packet + ad_len,
+                           &len, pseudo_packet + ad_len, packet_in->pi_data_sz - ad_len - 16))
+        return -1;
+    if (!EVP_CIPHER_CTX_ctrl(conn->ifc_enpub->enp_retry_aead_ctx[ret_ver], EVP_CTRL_GCM_SET_TAG, 16,
+                             pseudo_packet + tag_offset))
+        return -1;
+    if (!EVP_DecryptFinal_ex(conn->ifc_enpub->enp_retry_aead_ctx[ret_ver], pseudo_packet + len, &len))
+        return -1;
+    verified = 1;
+#endif
     lsquic_mm_put_4k(conn->ifc_pub.mm, pseudo_packet);
     return verified ? 0 : -1;
 }

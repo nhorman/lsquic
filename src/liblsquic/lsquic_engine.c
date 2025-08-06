@@ -42,7 +42,13 @@
 #include <zlib.h>
 #endif
 
+#ifdef HAVE_BORINGSSL
 #include <openssl/aead.h>
+#else
+#include <openssl/types.h>
+#include <openssl/evp.h>
+#endif
+
 #include <openssl/rand.h>
 
 #include "lsquic.h"
@@ -285,7 +291,12 @@ struct lsquic_engine
     int                                last_tick_diff;
 #endif
     struct crand                       crand;
+#ifdef HAVE_BORINGSSL
     EVP_AEAD_CTX                       retry_aead_ctx[N_IETF_RETRY_VERSIONS];
+#else
+    EVP_CIPHER_CTX*                    retry_aead_ctx[N_IETF_RETRY_VERSIONS];
+#endif
+
 #if LSQUIC_CONN_STATS
     struct {
         uint16_t            immed_ticks;    /* bitmask */
@@ -572,6 +583,9 @@ lsquic_engine_new (unsigned flags,
     unsigned i;
     char err_buf[100];
     uint64_t seed;
+#ifdef HAVE_OPENSSL
+    EVP_CIPHER *cph;
+#endif
 
     if (!api->ea_packets_out)
     {
@@ -834,8 +848,16 @@ lsquic_engine_new (unsigned flags,
 #if LSQUIC_CONN_STATS
     engine->stats_fh = api->ea_stats_fh;
 #endif
-    for (i = 0; i < sizeof(engine->retry_aead_ctx)
-                                    / sizeof(engine->retry_aead_ctx[0]); ++i)
+#ifdef HAVE_OPENSSL
+    cph = EVP_CIPHER_fetch(NULL, "AES-128-GCM", NULL);
+    if (cph == NULL) {
+         LSQ_ERROR("Could not fetch AES 128 GCM cipher");
+         return NULL;
+     }
+#endif
+
+    for (i = 0; i < N_IETF_RETRY_VERSIONS; i++) {
+#ifdef HAVE_BORINGSSL
         if (1 != EVP_AEAD_CTX_init(&engine->retry_aead_ctx[i],
                         EVP_aead_aes_128_gcm(), lsquic_retry_key_buf[i],
                         IETF_RETRY_KEY_SZ, 16, NULL))
@@ -844,6 +866,24 @@ lsquic_engine_new (unsigned flags,
             lsquic_engine_destroy(engine);
             return NULL;
         }
+#else
+        engine->retry_aead_ctx[i] = EVP_CIPHER_CTX_new();
+        if (engine->retry_aead_ctx[i] == NULL) {
+            LSQ_ERROR("Could not allocate new cipher context");
+            lsquic_engine_destroy(engine);
+            return NULL;
+        }
+        if (!EVP_EncryptInit_ex(engine->retry_aead_ctx[i], cph, NULL, lsquic_retry_key_buf[i],
+                                NULL)) {
+            LSQ_ERROR("Could not set initial key for cipher");
+            lsquic_engine_destroy(engine);
+            return NULL;
+        }
+#endif
+    }
+#ifdef HAVE_OPENSSL
+    EVP_CIPHER_free(cph);
+#endif
     engine->pub.enp_retry_aead_ctx = engine->retry_aead_ctx;
 
     LSQ_INFO("instantiated engine");
@@ -1915,9 +1955,13 @@ lsquic_engine_destroy (lsquic_engine_t *engine)
 #if LSQUIC_COUNT_ENGINE_CALLS
     LSQ_NOTICE("number of calls into the engine: %lu", engine->n_engine_calls);
 #endif
-    for (i = 0; i < sizeof(engine->retry_aead_ctx)
-                                    / sizeof(engine->retry_aead_ctx[0]); ++i)
+    for (i = 0; i < N_IETF_RETRY_VERSIONS; i++) {
+#ifdef HAVE_BORINGSSL
         EVP_AEAD_CTX_cleanup(&engine->pub.enp_retry_aead_ctx[i]);
+#else
+        EVP_CIPHER_CTX_free(engine->pub.enp_retry_aead_ctx[i]);
+#endif
+    }
     free(engine->pub.enp_alpn);
     free(engine);
 }

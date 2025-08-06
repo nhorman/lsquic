@@ -9,6 +9,9 @@
 
 #ifndef LSQUIC_ENGINE_PUBLIC_H
 #define LSQUIC_ENGINE_PUBLIC_H 1
+#ifdef HAVE_OPENSSL
+#include <openssl/evp.h>
+#endif
 
 struct lsquic_cid;
 struct lsquic_conn;
@@ -69,7 +72,11 @@ struct lsquic_engine_public {
     unsigned char                   enp_ver_tags_buf[ sizeof(lsquic_ver_tag_t) * N_LSQVER ];
     unsigned                        enp_ver_tags_len;
     struct crand                   *enp_crand;
+#ifdef HAVE_BORINGSSL
     struct evp_aead_ctx_st         *enp_retry_aead_ctx;
+#else
+    EVP_CIPHER_CTX                 **enp_retry_aead_ctx;
+#endif
     unsigned char                  *enp_alpn;   /* May be set if not HTTP */
     /* es_noprogress_timeout converted to microseconds for speed */
     lsquic_time_t                   enp_noprog_timeout;

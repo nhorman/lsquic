@@ -20,9 +20,17 @@
 #include <openssl/stack.h>
 #include <openssl/x509.h>
 #include <openssl/rand.h>
+#ifdef HAVE_BORINGSSL
 #include <openssl/nid.h>
-#include <openssl/bn.h>
 #include <openssl/hkdf.h>
+#else
+#include <openssl/evp.h>
+#include <openssl/kdf.h>
+#include <openssl/core_names.h>
+#include <openssl/err.h>
+#endif
+
+#include <openssl/bn.h>
 #include <zlib.h>
 
 #include "lsquic.h"
@@ -267,8 +275,11 @@ struct lsquic_enc_session
 #define dec_ctx_i es_aead_ctxs[GEL_EARLY][1]
 #define enc_ctx_f es_aead_ctxs[GEL_FORW][0]
 #define dec_ctx_f es_aead_ctxs[GEL_FORW][1]
+#ifdef HAVE_BORINGSSL
     EVP_AEAD_CTX    *es_aead_ctxs[N_GELS][2];
-
+#else
+    EVP_CIPHER_CTX  *es_aead_ctxs[N_GELS][2];
+#endif
 #define enc_key_nonce_i es_ivs[GEL_EARLY][0]
 #define dec_key_nonce_i es_ivs[GEL_EARLY][1]
 #define enc_key_nonce_f es_ivs[GEL_FORW][0]
@@ -686,7 +697,13 @@ gquic2_init_crypto_ctx (struct lsquic_enc_session *enc_session,
                 unsigned idx, const unsigned char *secret, size_t secret_sz)
 {
     const EVP_MD *const md = EVP_sha256();
+    int ret;
+#ifdef HAVE_BORINGSSL
     const EVP_AEAD *const aead = EVP_aead_aes_128_gcm();
+#else
+    EVP_CIPHER *const aead = EVP_CIPHER_fetch(NULL, "AES-128-GCM", NULL);
+#endif
+
     unsigned char key[aes128_key_len];
     char hexbuf[sizeof(key) * 2 + 1];
 
@@ -700,12 +717,23 @@ gquic2_init_crypto_ctx (struct lsquic_enc_session *enc_session,
     lsquic_qhkdf_expand(md, secret, secret_sz, PN_LABEL, PN_LABEL_SZ,
         enc_session->es_hps[GEL_CLEAR][idx], IQUIC_HP_LEN);
     assert(!enc_session->es_aead_ctxs[GEL_CLEAR][idx]);
+#ifdef HAVE_BORINGSSL
     enc_session->es_aead_ctxs[GEL_CLEAR][idx]
                 = malloc(sizeof(*enc_session->es_aead_ctxs[GEL_CLEAR][idx]));
+#else
+    enc_session->es_aead_ctxs[GEL_CLEAR][idx] = EVP_CIPHER_CTX_new();
+#endif
     if (!enc_session->es_aead_ctxs[GEL_CLEAR][idx])
         return -1;
-    if (!EVP_AEAD_CTX_init(enc_session->es_aead_ctxs[GEL_CLEAR][idx], aead,
-                                    key, sizeof(key), IQUIC_TAG_LEN, NULL))
+#ifdef HAVE_BORINGSSL
+    ret = EVP_AEAD_CTX_init(enc_session->es_aead_ctxs[GEL_CLEAR][idx], aead,
+                            key, sizeof(key), IQUIC_TAG_LEN, NULL);
+#else
+    ret = EVP_EncryptInit_ex(enc_session->es_aead_ctxs[GEL_CLEAR][idx], aead,
+                             NULL, key, NULL);
+    EVP_CIPHER_free(aead);
+#endif
+    if (ret == 0)
     {
         free(enc_session->es_aead_ctxs[GEL_CLEAR][idx]);
         enc_session->es_aead_ctxs[GEL_CLEAR][idx] = NULL;
@@ -746,13 +774,43 @@ gquic2_setup_handshake_keys (struct lsquic_enc_session *enc_session)
     };
     unsigned char hsk_secret[EVP_MAX_MD_SIZE];
     unsigned char secret[SHA256_DIGEST_LENGTH];
+#ifdef HAVE_OPENSSL
+    EVP_KDF *kdf = EVP_KDF_fetch(NULL, "HKDF", NULL);
+    EVP_KDF_CTX *kctx = EVP_KDF_CTX_new(kdf);
+    OSSL_PARAM params[5], *pp = params;
+    int kdf_mode = EVP_KDF_HKDF_MODE_EXTRACT_ONLY;
+    int ret;
 
+    EVP_KDF_free(kdf);
+#endif
+
+#ifdef HAVE_BORINGSSL
     if (!HKDF_extract(hsk_secret, &hsk_secret_sz, md, cid_buf, cid_buf_sz,
                                                 salt_Q050, sizeof(salt_Q050)))
     {
         LSQ_WARN("HKDF extract failed");
         return -1;
     }
+#else
+    *pp++ = OSSL_PARAM_construct_int(OSSL_KDF_PARAM_MODE, &kdf_mode);
+
+    *pp++ = OSSL_PARAM_construct_utf8_string(OSSL_KDF_PARAM_DIGEST, SN_sha256, strlen(SN_sha256));
+
+    *pp++ = OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_KEY, (uint8_t *)cid_buf, cid_buf_sz);
+
+    *pp++ = OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_SALT, (uint8_t *)salt_Q050, sizeof(salt_Q050));
+
+    *pp = OSSL_PARAM_construct_end();
+
+    hsk_secret_sz = 64;
+    ret = EVP_KDF_derive(kctx, hsk_secret, hsk_secret_sz, params);
+
+    EVP_KDF_CTX_free(kctx);
+    if (ret <= 0) {
+        LSQ_WARN("HKDF extract failed");
+        return -1;
+    }
+#endif
 
     for (i = 0; i < 2; ++i)
     {
@@ -966,8 +1024,12 @@ lsquic_enc_session_destroy (enc_session_t *enc_session_p)
         for (i = 0; i < 2; ++i)
             if (enc_session->es_aead_ctxs[gel][i])
             {
+#ifdef HAVE_BORINGSSL
                 EVP_AEAD_CTX_cleanup(enc_session->es_aead_ctxs[gel][i]);
                 free(enc_session->es_aead_ctxs[gel][i]);
+#else
+                EVP_CIPHER_CTX_free(enc_session->es_aead_ctxs[gel][i]);
+#endif
             }
     memset(enc_session->es_aead_ctxs, 0, sizeof(enc_session->es_aead_ctxs));
     if (enc_session->info)
@@ -1814,6 +1876,9 @@ get_valid_scfg (const struct lsquic_enc_session *enc_session,
     int ret;
     unsigned msg_len, server_config_sz;
     struct message_writer mw;
+#ifdef HAVE_OPENSSL
+    EVP_CIPHER *cph;
+#endif
 
     if (enpub->enp_server_config->lsc_scfg && (enpub->enp_server_config->lsc_scfg->info.expy > (uint64_t)t))
         return enpub->enp_server_config;
@@ -1829,8 +1894,16 @@ get_valid_scfg (const struct lsquic_enc_session *enc_session,
             /* Why need to init here, because this memory may be read from SHM,
              * the struct is ready but AEAD_CTX is not ready.
              **/
+#ifdef HAVE_BORINGSSL
             EVP_AEAD_CTX_init(&enpub->enp_server_config->lsc_stk_ctx, EVP_aead_aes_128_gcm(),
                               enpub->enp_server_config->lsc_scfg->info.skt_key, 16, 12, NULL);
+#else
+            cph = EVP_CIPHER_fetch(NULL, "AES-128-GCM", NULL);
+            enpub->enp_server_config->lsc_stk_ctx = EVP_CIPHER_CTX_new();
+            EVP_EncryptInit_ex(enpub->enp_server_config->lsc_stk_ctx, cph,
+                               NULL, enpub->enp_server_config->lsc_scfg->info.skt_key, NULL);
+            EVP_CIPHER_free(cph);
+#endif
             return enpub->enp_server_config;
         }
         else
@@ -1899,10 +1972,17 @@ get_valid_scfg (const struct lsquic_enc_session *enc_session,
         /* Since internal error occured, but I have to use a SCFG, log it*/
         LSQ_DEBUG("get_valid_scfg got an shi internal error.\n");
     }
-
+#ifdef HAVE_BORINGSSL
     ret = EVP_AEAD_CTX_init(&enpub->enp_server_config->lsc_stk_ctx, EVP_aead_aes_128_gcm(),
                               enpub->enp_server_config->lsc_scfg->info.skt_key,
                               sizeof(enpub->enp_server_config->lsc_scfg->info.skt_key), 12, NULL);
+#else
+    cph = EVP_CIPHER_fetch(NULL, "AES-128-GCM", NULL);
+    enpub->enp_server_config->lsc_stk_ctx = EVP_CIPHER_CTX_new();
+    EVP_EncryptInit_ex(enpub->enp_server_config->lsc_stk_ctx, cph,
+                       NULL, enpub->enp_server_config->lsc_scfg->info.skt_key, NULL);
+    EVP_CIPHER_free(cph);
+#endif
 
     LSQ_DEBUG("get_valid_scfg::EVP_AEAD_CTX_init return %d.", ret);
     return enpub->enp_server_config;
@@ -2447,23 +2527,44 @@ static int handle_chlo_reply_verify_prof(struct lsquic_enc_session *enc_session,
     return ret;
 }
 
-
 static void
+#ifdef HAVE_BORINGSSL
 setup_aead_ctx (const struct lsquic_enc_session *enc_session,
                 EVP_AEAD_CTX **ctx, unsigned char key[], int key_len,
                 unsigned char *key_copy)
+#else
+setup_aead_ctx (const struct lsquic_enc_session *enc_session,
+                EVP_CIPHER_CTX **ctx, unsigned char key[], int key_len,
+                unsigned char *key_copy)
+#endif
 {
+#ifdef HAVE_BORINGSSL
     const EVP_AEAD *aead_ = EVP_aead_aes_128_gcm();
     const int auth_tag_size = enc_session->es_flags & ES_GQUIC2
-                                    ? IQUIC_TAG_LEN : GQUIC_PACKET_HASH_SZ;
+                              ? IQUIC_TAG_LEN : GQUIC_PACKET_HASH_SZ;
+#else
+    const EVP_CIPHER *aead_ = EVP_CIPHER_fetch(NULL, "AES-128-GCM", NULL);
+#endif
     if (*ctx)
     {
+#ifdef HAVE_BORINGSSL
         EVP_AEAD_CTX_cleanup(*ctx);
+#else
+        EVP_CIPHER_CTX_free(*ctx);
+#endif
     }
     else
+#ifdef HAVE_BORINGSSL
         *ctx = (EVP_AEAD_CTX *)malloc(sizeof(EVP_AEAD_CTX));
+#else
+        *ctx = EVP_CIPHER_CTX_new();
+#endif
 
+#ifdef HAVE_BORINGSSL
     EVP_AEAD_CTX_init(*ctx, aead_, key, key_len, auth_tag_size, NULL);
+#else
+    EVP_EncryptInit_ex(*ctx, aead_, NULL, key, NULL);
+#endif
     if (key_copy)
         memcpy(key_copy, key, key_len);
 }
@@ -2475,7 +2576,11 @@ determine_diversification_key (enc_session_t *enc_session_p,
 {
     struct lsquic_enc_session *const enc_session = enc_session_p;
     const int is_client = !(enc_session->es_flags & ES_SERVER);
+#ifdef HAVE_BORINGSSL
     EVP_AEAD_CTX **ctx_s_key;
+#else
+    EVP_CIPHER_CTX **ctx_s_key;
+#endif
     unsigned char *key_i, *iv;
     const size_t iv_len = enc_session->es_flags & ES_GQUIC2
                                             ? IQUIC_IV_LEN : aes128_iv_len;
@@ -2538,7 +2643,11 @@ determine_keys (struct lsquic_enc_session *enc_session)
     uint8_t *c_hp, *s_hp;
     size_t nonce_len, hkdf_input_len;
     unsigned char sub_key[32];
+#ifdef HAVE_BORINGSSL
     EVP_AEAD_CTX **ctx_c_key, **ctx_s_key;
+#else
+    EVP_CIPHER_CTX **ctx_c_key, **ctx_s_key;
+#endif
     char key_flag;
     char str_buf[512];
 
@@ -2900,8 +3009,13 @@ lsquic_gen_stk (lsquic_server_config_t *server_config, const struct sockaddr *ip
     memcpy(stk + 16, &tm, 8);
     RAND_bytes(stk + 24, STK_LENGTH - 24 - 12);
     RAND_bytes(stk_out + STK_LENGTH - 12, 12);
+#ifdef HAVE_BORINGSSL
     lsquic_aes_aead_enc(&server_config->lsc_stk_ctx, NULL, 0, stk_out + STK_LENGTH - 12, 12, stk,
                  STK_LENGTH - 12 - 12, stk_out, &out_len);
+#else
+    lsquic_aes_aead_enc(server_config->lsc_stk_ctx, NULL, 0, stk_out + STK_LENGTH - 12, 12, stk,
+                 STK_LENGTH - 12 - 12, stk_out, &out_len);
+#endif
 }
 
 
@@ -2923,9 +3037,15 @@ lsquic_verify_stk0 (const struct lsquic_enc_session *enc_session,
     if (lsquic_str_len(stk) < STK_LENGTH)
         return HFR_SRC_ADDR_TOKEN_INVALID;
 
+#if HAVE_BORINGSSL
     int ret = lsquic_aes_aead_dec(&server_config->lsc_stk_ctx, NULL, 0,
                            stks + STK_LENGTH - 12, 12, stks,
                            STK_LENGTH - 12, stk_out, &out_len);
+#else
+    int ret = lsquic_aes_aead_dec(server_config->lsc_stk_ctx, NULL, 0,
+                           stks + STK_LENGTH - 12, 12, stks,
+                           STK_LENGTH - 12, stk_out, &out_len);
+#endif
     if (ret != 0)
     {
         LSQ_DEBUG("***lsquic_verify_stk decrypted failed.");
@@ -3056,7 +3176,11 @@ decrypt_packet (struct lsquic_enc_session *enc_session, uint8_t path_id,
     /* Comment: 12 = sizeof(dec_key_iv] 4 + sizeof(pack_num) 8 */
     uint8_t nonce[12];
     uint64_t path_id_packet_number;
+#ifdef HAVE_BORINGSSL
     EVP_AEAD_CTX *key = NULL;
+#else
+    EVP_CIPHER_CTX *key = NULL;
+#endif
     int try_times = 0;
     enum enc_level enc_level;
 
@@ -3223,7 +3347,11 @@ gquic_encrypt_buf (struct lsquic_enc_session *enc_session,
     /* Comment: 12 = sizeof(dec_key_iv] 4 + sizeof(pack_num) 8 */
     uint8_t nonce[12];
     uint64_t path_id_packet_number;
+#ifdef HAVE_BORINGSSL
     EVP_AEAD_CTX *key;
+#else
+    EVP_CIPHER_CTX *key;
+#endif
 
     if (enc_session)
         LSQ_DEBUG("%s: hsk_state: %d", __func__, enc_session->hsk_state);
@@ -3884,12 +4012,11 @@ gquic2_gen_hp_mask (struct lsquic_enc_session *enc_session,
         const unsigned char *sample, unsigned char mask[EVP_MAX_BLOCK_LENGTH])
 {
     const EVP_CIPHER *const cipher = EVP_aes_128_ecb();
-    EVP_CIPHER_CTX hp_ctx;
+    EVP_CIPHER_CTX *hp_ctx = EVP_CIPHER_CTX_new();
     int out_len;
 
-    EVP_CIPHER_CTX_init(&hp_ctx);
-    if (EVP_EncryptInit_ex(&hp_ctx, cipher, NULL, hp, 0)
-        && EVP_EncryptUpdate(&hp_ctx, mask, &out_len, sample, 16))
+    if (EVP_EncryptInit_ex(hp_ctx, cipher, NULL, hp, 0)
+        && EVP_EncryptUpdate(hp_ctx, mask, &out_len, sample, 16))
     {
         assert(out_len >= 5);
     }
@@ -3901,7 +4028,7 @@ gquic2_gen_hp_mask (struct lsquic_enc_session *enc_session,
             "cannot generate hp mask, error code: %"PRIu32, ERR_get_error());
     }
 
-    (void) EVP_CIPHER_CTX_cleanup(&hp_ctx);
+    EVP_CIPHER_CTX_free(hp_ctx);
 
     if (0)
     {
@@ -3977,7 +4104,11 @@ gquic2_esf_encrypt_packet (enc_session_t *enc_session_p,
 {
     struct lsquic_enc_session *const enc_session = enc_session_p;
     struct lsquic_conn *const lconn = enc_session->es_conn;
+#ifdef HAVE_BORINGSSL
     EVP_AEAD_CTX *aead_ctx;
+#else
+    EVP_CIPHER_CTX *aead_ctx;
+#endif
     unsigned char *dst;
     enum gel gel;
     unsigned char nonce_buf[ IQUIC_IV_LEN + 8 ];
@@ -3986,8 +4117,9 @@ gquic2_esf_encrypt_packet (enc_session_t *enc_session_p,
     size_t out_sz, dst_sz;
     int header_sz;
     int ipv6;
+    int len = 0;
     unsigned packno_off, packno_len, sample_off, divers_nonce_len;
-    char errbuf[ERR_ERROR_STRING_BUF_LEN];
+    char errbuf[256];
 
     gel = hety2gel[ packet_out->po_header_type ];
     aead_ctx = enc_session->es_aead_ctxs[gel][0];
@@ -4052,7 +4184,7 @@ gquic2_esf_encrypt_packet (enc_session_t *enc_session_p,
         LSQ_DEBUG("seal: in (%hu bytes): %s", packet_out->po_data_sz,
             HEXSTR(packet_out->po_data, packet_out->po_data_sz, s_str));
     }
-
+#ifdef HAVE_BORINGSSL
     if (!EVP_AEAD_CTX_seal(aead_ctx, dst + header_sz, &out_sz,
                 dst_sz - header_sz, nonce, IQUIC_IV_LEN,
                 packet_out->po_data, packet_out->po_data_sz, dst, header_sz))
@@ -4061,6 +4193,20 @@ gquic2_esf_encrypt_packet (enc_session_t *enc_session_p,
             ERR_error_string(ERR_get_error(), errbuf));
         goto err;
     }
+#else
+    if (EVP_CIPHER_CTX_ctrl(aead_ctx, EVP_CTRL_GCM_SET_IVLEN, IQUIC_IV_LEN, NULL))
+        goto err;
+    if (!EVP_EncryptInit_ex(aead_ctx, NULL, NULL, NULL, nonce))
+        goto err;
+    if (!EVP_EncryptUpdate(aead_ctx, NULL, &len, dst, header_sz))
+        goto err;
+    if (!EVP_EncryptUpdate(aead_ctx, dst + header_sz, &len, packet_out->po_data, packet_out->po_data_sz))
+        goto err;
+    out_sz = len;
+    if (!EVP_CIPHER_CTX_ctrl(aead_ctx, EVP_CTRL_GCM_GET_TAG, IQUIC_IV_LEN, dst + out_sz))
+        goto err;
+    out_sz += IQUIC_IV_LEN;
+#endif
     assert(out_sz == dst_sz - header_sz);
 
     if (!packet_out->po_nonce)
@@ -4174,7 +4320,10 @@ gquic2_esf_decrypt_packet (enc_session_t *enc_session_p,
     size_t out_sz;
     enum dec_packin dec_packin;
     const size_t dst_sz = packet_in->pi_data_sz - IQUIC_TAG_LEN;
-    char errbuf[ERR_ERROR_STRING_BUF_LEN];
+    int len = 0;
+    size_t tag_offset;
+    size_t data_size;
+    char errbuf[256];
 
     dst = lsquic_mm_get_packet_in_buf(&enpub->enp_mm, dst_sz);
     if (!dst)
@@ -4250,6 +4399,7 @@ gquic2_esf_decrypt_packet (enc_session_t *enc_session_p,
                    packet_in->pi_data_sz - packet_in->pi_header_sz, s_str));
     }
 
+#ifdef HAVE_BORINGSSL
     if (!EVP_AEAD_CTX_open(enc_session->es_aead_ctxs[gel][1],
                 dst + packet_in->pi_header_sz, &out_sz,
                 dst_sz - packet_in->pi_header_sz, nonce, IQUIC_IV_LEN,
@@ -4262,6 +4412,33 @@ gquic2_esf_decrypt_packet (enc_session_t *enc_session_p,
         dec_packin = DECPI_BADCRYPT;
         goto err;
     }
+#else
+    tag_offset = packet_in->pi_data_sz - EVP_GCM_TLS_TAG_LEN;
+
+    if (EVP_CIPHER_CTX_ctrl(enc_session->es_aead_ctxs[gel][1],
+                            EVP_CTRL_GCM_SET_IVLEN, IQUIC_IV_LEN, NULL))
+        goto err;
+
+    if (!EVP_DecryptInit_ex(enc_session->es_aead_ctxs[gel][1], NULL, NULL, NULL, nonce))
+        goto err;
+
+    if (!EVP_DecryptUpdate(enc_session->es_aead_ctxs[gel][1], NULL, &len, dst, packet_in->pi_header_sz))
+        goto err;
+
+    if (!EVP_DecryptUpdate(enc_session->es_aead_ctxs[gel][1], dst + packet_in->pi_header_sz,
+                           &len, packet_in->pi_data + packet_in->pi_header_sz,
+                           packet_in->pi_data_sz - packet_in->pi_header_sz - EVP_GCM_TLS_TAG_LEN))
+        goto err;
+
+    if (!EVP_CIPHER_CTX_ctrl(enc_session->es_aead_ctxs[gel][1], EVP_CTRL_GCM_SET_TAG,
+                             EVP_GCM_TLS_TAG_LEN, packet_in->pi_data + tag_offset))
+        goto err;
+
+    if (EVP_DecryptFinal_ex(enc_session->es_aead_ctxs[gel][1], dst + packet_in->pi_header_sz + len, &len))
+        goto err;
+
+    out_sz = len;
+#endif
 
     /* Bits 2 and 3 are not set and don't need to be checked in gQUIC */
     if (packet_in->pi_flags & PI_OWN_DATA)

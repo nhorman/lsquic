@@ -404,7 +404,7 @@ int lsquic_aes_aead_enc(EVP_CIPHER_CTX *key,
     int total_len = 0;
 
     LSQ_DEBUG("***lsquic_aes_aead_enc data %s", lsquic_get_bin_str(plain, plain_len, 40));
-    if (EVP_CIPHER_CTX_ctrl(key, EVP_CTRL_GCM_SET_IVLEN, nonce_len, NULL))
+    if (!EVP_CIPHER_CTX_ctrl(key, EVP_CTRL_GCM_SET_IVLEN, nonce_len, NULL))
         return -1;
 
     if (!EVP_EncryptInit_ex(key, NULL, NULL, NULL, nonce))

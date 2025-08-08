@@ -395,6 +395,9 @@ lsquic_iquic_gen_retry_pkt (unsigned char *buf, size_t bufsz,
     unsigned char *p = buf;
     lsquic_ver_tag_t ver_tag;
     size_t ad_len, out_len;
+#ifdef HAVE_OPENSSL
+    int ossl_out_len; 
+#endif
     unsigned ret_ver;
     ssize_t sz;
 #define INTEGRITY_TAG_LEN 16
@@ -445,12 +448,32 @@ lsquic_iquic_gen_retry_pkt (unsigned char *buf, size_t bufsz,
 
     ret_ver = lsquic_version_2_retryver(version);
     out_len = sizeof(tag);
+#ifdef HAVE_BORINGSSL
     if (!(1 == EVP_AEAD_CTX_seal(&enpub->enp_retry_aead_ctx[ret_ver], tag,
                 &out_len, out_len, lsquic_retry_nonce_buf[ret_ver],
                 IETF_RETRY_NONCE_SZ,
                 NULL, 0, ad_buf, ad_len) && out_len == sizeof(tag)))
         return -1;
+#else
 
+    if (!EVP_CIPHER_CTX_ctrl(enpub->enp_retry_aead_ctx[ret_ver],
+                             EVP_CTRL_GCM_SET_IVLEN, IETF_RETRY_NONCE_SZ, NULL))
+        return -1;
+    if (!EVP_EncryptInit_ex(enpub->enp_retry_aead_ctx[ret_ver], NULL, NULL,
+                            NULL, lsquic_retry_nonce_buf[ret_ver]))
+        return -1;
+    if (!EVP_EncryptUpdate(enpub->enp_retry_aead_ctx[ret_ver], NULL, &ossl_out_len, ad_buf, ad_len))
+        return -1;
+    if (!EVP_EncryptUpdate(enpub->enp_retry_aead_ctx[ret_ver], tag, &ossl_out_len, NULL, 0))
+        return -1;
+    if (!EVP_EncryptFinal_ex(enpub->enp_retry_aead_ctx[ret_ver], tag + ossl_out_len, &ossl_out_len))
+        return -1;
+    if (!EVP_CIPHER_CTX_ctrl(enpub->enp_retry_aead_ctx[ret_ver], EVP_CTRL_GCM_GET_TAG,
+                             EVP_GCM_TLS_TAG_LEN, tag + ossl_out_len))
+        return -1;
+    out_len = ossl_out_len;
+
+#endif
     memcpy(buf, ad_buf + 1 + dcid->len, ad_len - 1 - dcid->len);
     memcpy(buf + ad_len - 1 - dcid->len, tag, sizeof(tag));
     return ad_len - 1 - dcid->len + sizeof(tag);

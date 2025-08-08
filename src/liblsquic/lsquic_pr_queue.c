@@ -15,7 +15,12 @@
 #include <sys/socket.h>
 #endif
 
+#ifdef HAVE_BORINGSSL
 #include <openssl/aead.h>
+#else
+#include <openssl/evp.h>
+#endif
+
 #include <openssl/rand.h>
 
 #include "lsquic.h"

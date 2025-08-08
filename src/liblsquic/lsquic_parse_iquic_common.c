@@ -11,7 +11,11 @@
 #include <sys/types.h>
 
 #include <openssl/rand.h>
+#ifdef HAVE_BORINGSSL
 #include <openssl/aead.h>
+#else
+#include <openssl/evp.h>
+#endif
 
 #include "lsquic_types.h"
 #include "lsquic_int_types.h"

@@ -7243,7 +7243,7 @@ verify_retry_packet (struct ietf_full_conn *conn,
 {
     unsigned char *pseudo_packet;
 #ifdef HAVE_BORINGSSL
-    size_t out_len = 0
+    size_t out_len = 0;
 #endif
     size_t ad_len;
     unsigned ret_ver;

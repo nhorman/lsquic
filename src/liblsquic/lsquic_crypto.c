@@ -402,20 +402,43 @@ err:
 
 /* AEAD nonce is always zero */
 /* return 0 for OK */
-int lsquic_aes_aead_enc(EVP_AEAD_CTX *key,
+int lsquic_aes_aead_enc(EVP_CIPHER_CTX *ctx,
               const uint8_t *ad, size_t ad_len,
               const uint8_t *nonce, size_t nonce_len, 
               const uint8_t *plain, size_t plain_len,
               uint8_t *cypher, size_t *cypher_len)
 {
     int ret = 0;
-    size_t max_out_len;
-    max_out_len = *cypher_len;//plain_len + EVP_AEAD_max_overhead(aead_);
-    assert(*cypher_len >= max_out_len);
+    int tag_len;
+    uint8_t *tagptr;
+    int max_out_len = 0;
 
     LSQ_DEBUG("***lsquic_aes_aead_enc data %s", lsquic_get_bin_str(plain, plain_len, 40));
-    ret = EVP_AEAD_CTX_seal(key, cypher, cypher_len, max_out_len, 
-                            nonce, nonce_len, plain, plain_len, ad, ad_len);
+
+    tag_len = 16; /* AES-128-GCM tag length */
+
+    tagptr = (uint8_t *)plain + plain_len - tag_len;
+
+    if (!EVP_EncryptInit_ex(ctx, NULL, NULL, NULL, nonce))
+        goto err;
+
+    if (!EVP_EncryptUpdate(ctx, NULL, &max_out_len, ad, ad_len))
+        goto err;
+
+    if (!EVP_EncryptUpdate(ctx, cypher, &max_out_len, plain, plain_len - tag_len))
+        goto err;
+
+    if (!EVP_EncryptFinal(ctx, tagptr, &max_out_len))
+        goto err;
+
+    if (!EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_GET_TAG, tag_len, tagptr))
+        goto err;
+
+    *cypher_len = max_out_len;
+
+    ret = 1;
+
+err:
 //     LSQ_DEBUG("***lsquic_aes_aead_enc nonce: %s", lsquic_get_bin_str(nonce, nonce_len));
 //     LSQ_DEBUG("***lsquic_aes_aead_enc AD: %s", lsquic_get_bin_str(ad, ad_len));
 //     LSQ_DEBUG("***lsquic_aes_aead_enc return %d", (ret ? 0 : -1));
@@ -434,22 +457,40 @@ int lsquic_aes_aead_enc(EVP_AEAD_CTX *key,
 
 
 /* return 0 for OK */
-int lsquic_aes_aead_dec(EVP_AEAD_CTX *key,
+int lsquic_aes_aead_dec(EVP_CIPHER_CTX *ctx,
               const uint8_t *ad, size_t ad_len,
               const uint8_t *nonce, size_t nonce_len, 
               const uint8_t *cypher, size_t cypher_len,
               uint8_t *plain, size_t *plain_len)
 {
     int ret = 0;
-    size_t max_out_len = *plain_len;
-    assert(max_out_len >= cypher_len);
+    int max_out_len = 0;
+    uint8_t *tagptr;
+    int tag_len = 16; /*AES-128-GCM*/
 
     LSQ_DEBUG("***lsquic_aes_aead_dec data %s", lsquic_get_bin_str(cypher, cypher_len, 40));
 
+    tagptr = (uint8_t *)cypher + cypher_len;
+
+    if (!EVP_DecryptInit_ex(ctx, NULL, NULL, NULL, nonce))
+        goto err;
     
-    ret = EVP_AEAD_CTX_open(key, plain, plain_len, max_out_len,
-                            nonce, nonce_len, cypher, cypher_len, ad, ad_len);
+    if (!EVP_DecryptUpdate(ctx, NULL, &max_out_len, ad, ad_len))
+        goto err;
+
+    if (!EVP_DecryptUpdate(ctx, plain, &max_out_len, cypher, cypher_len))
+        goto err;
+
+    if (!EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_TAG, tag_len, tagptr))
+        goto err;
     
+    if (!EVP_DecryptFinal_ex(ctx, tagptr, &max_out_len))
+        goto err;
+
+    *plain_len = max_out_len;
+    ret = 1;
+
+err: 
 //    LSQ_DEBUG("***lsquic_aes_aead_dec nonce: %s", lsquic_get_bin_str(nonce, nonce_len));
 //    LSQ_DEBUG("***lsquic_aes_aead_dec AD: %s", lsquic_get_bin_str(ad, ad_len));
 //    LSQ_DEBUG("***lsquic_aes_aead_dec return %d", (ret ? 0 : -1));

@@ -64,13 +64,13 @@ void lsquic_serialize_fnv128_short(uint128 v, uint8_t *md);
 
 
 /* Encrypt plaint text to cipher test */
-int lsquic_aes_aead_enc(struct evp_aead_ctx_st *key,
+int lsquic_aes_aead_enc(EVP_CIPHER_CTX *key,
               const uint8_t *ad, size_t ad_len,
               const uint8_t *nonce, size_t nonce_len, 
               const uint8_t *plain, size_t plain_len,
               uint8_t *cypher, size_t *cypher_len);
 
-int lsquic_aes_aead_dec(struct evp_aead_ctx_st *key,
+int lsquic_aes_aead_dec(EVP_CIPHER_CTX *key,
               const uint8_t *ad, size_t ad_len,
               const uint8_t *nonce, size_t nonce_len, 
               const uint8_t *cypher, size_t cypher_len,

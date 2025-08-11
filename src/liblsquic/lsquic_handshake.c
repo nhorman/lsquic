@@ -267,7 +267,7 @@ struct lsquic_enc_session
 #define dec_ctx_i es_aead_ctxs[GEL_EARLY][1]
 #define enc_ctx_f es_aead_ctxs[GEL_FORW][0]
 #define dec_ctx_f es_aead_ctxs[GEL_FORW][1]
-    EVP_AEAD_CTX    *es_aead_ctxs[N_GELS][2];
+    EVP_CIPHER_CTX    *es_aead_ctxs[N_GELS][2];
 
 #define enc_key_nonce_i es_ivs[GEL_EARLY][0]
 #define dec_key_nonce_i es_ivs[GEL_EARLY][1]
@@ -686,9 +686,15 @@ gquic2_init_crypto_ctx (struct lsquic_enc_session *enc_session,
                 unsigned idx, const unsigned char *secret, size_t secret_sz)
 {
     const EVP_MD *const md = EVP_sha256();
-    const EVP_AEAD *const aead = EVP_aead_aes_128_gcm();
+    const EVP_CIPHER *aead;
     unsigned char key[aes128_key_len];
     char hexbuf[sizeof(key) * 2 + 1];
+
+#ifdef HAVE_OPENSSL
+    aead = EVP_cipher_fetch(NULL, "AES-128-GCM", NULL);
+#else
+    aead = EVP_get_cipherbyname("AES-128-GCM");
+#endif
 
     lsquic_qhkdf_expand(md, secret, secret_sz, KEY_LABEL, KEY_LABEL_SZ,
         key, sizeof(key));
@@ -700,17 +706,29 @@ gquic2_init_crypto_ctx (struct lsquic_enc_session *enc_session,
     lsquic_qhkdf_expand(md, secret, secret_sz, PN_LABEL, PN_LABEL_SZ,
         enc_session->es_hps[GEL_CLEAR][idx], IQUIC_HP_LEN);
     assert(!enc_session->es_aead_ctxs[GEL_CLEAR][idx]);
+#ifdef HAVE_OPENSSL
+    enc_session->es_aead_ctxs[GEL_CLEAR][idx] = EVP_CIPHER_CTX_new();
+#else
     enc_session->es_aead_ctxs[GEL_CLEAR][idx]
                 = malloc(sizeof(*enc_session->es_aead_ctxs[GEL_CLEAR][idx]));
+#endif
     if (!enc_session->es_aead_ctxs[GEL_CLEAR][idx])
         return -1;
-    if (!EVP_AEAD_CTX_init(enc_session->es_aead_ctxs[GEL_CLEAR][idx], aead,
-                                    key, sizeof(key), IQUIC_TAG_LEN, NULL))
+    if (!EVP_EncryptInit_ex(enc_session->es_aead_ctxs[GEL_CLEAR][idx], aead,
+                            NULL, key, NULL))
     {
+#ifdef HAVE_OPENSSL
+        EVP_CIPHER_CTX_free(enc_session->es_aead_ctxs[GEL_CLEAR][idx]);
+        EVP_CIPHER_free(aead);
+#else
         free(enc_session->es_aead_ctxs[GEL_CLEAR][idx]);
+#endif
         enc_session->es_aead_ctxs[GEL_CLEAR][idx] = NULL;
         return -1;
     }
+#ifdef HAVE_OPENSSL
+    EVP_CIPHER_free(aead);
+#endif
     return 0;
 }
 
@@ -966,8 +984,11 @@ lsquic_enc_session_destroy (enc_session_t *enc_session_p)
         for (i = 0; i < 2; ++i)
             if (enc_session->es_aead_ctxs[gel][i])
             {
-                EVP_AEAD_CTX_cleanup(enc_session->es_aead_ctxs[gel][i]);
+#ifdef HAVE_OPENSSL
+                EVP_CIPHER_CTX_free(enc_session->es_aead_ctxs[gel][i]);
+#else
                 free(enc_session->es_aead_ctxs[gel][i]);
+#endif
             }
     memset(enc_session->es_aead_ctxs, 0, sizeof(enc_session->es_aead_ctxs));
     if (enc_session->info)
@@ -1814,9 +1835,22 @@ get_valid_scfg (const struct lsquic_enc_session *enc_session,
     int ret;
     unsigned msg_len, server_config_sz;
     struct message_writer mw;
+    const EVP_CIPHER *cph = NULL;
 
-    if (enpub->enp_server_config->lsc_scfg && (enpub->enp_server_config->lsc_scfg->info.expy > (uint64_t)t))
+#ifdef HAVE_OPENSSL
+    cph = EVP_CIPHER_fetch(NULL, "AES-128-GCM", NULL)
+    if (cph == NULL)
+        return NULL;
+#else
+    cph = EVP_get_cipherbyname("AES-128-GCM");
+#endif
+
+    if (enpub->enp_server_config->lsc_scfg && (enpub->enp_server_config->lsc_scfg->info.expy > (uint64_t)t)) {
+#ifdef HAVE_OPENSSL
+        EVP_CIPHER_free(cph);
+#endif
         return enpub->enp_server_config;
+    }
 
     ret = shi->shi_lookup(shi_ctx, SERVER_SCFG_KEY, SERVER_SCFG_KEY_SIZE,
                           &scfg_ptr, &real_len);
@@ -1829,8 +1863,22 @@ get_valid_scfg (const struct lsquic_enc_session *enc_session,
             /* Why need to init here, because this memory may be read from SHM,
              * the struct is ready but AEAD_CTX is not ready.
              **/
-            EVP_AEAD_CTX_init(&enpub->enp_server_config->lsc_stk_ctx, EVP_aead_aes_128_gcm(),
-                              enpub->enp_server_config->lsc_scfg->info.skt_key, 16, 12, NULL);
+             if (enpub->enp_server_config->lsc_stk_ctx != NULL) {
+                enpub->enp_server_config->lsc_stk_ctx = EVP_CIPHER_CTX_new();
+                if (enpub->enp_server_config->lsc_stk_ctx == NULL) {
+#ifdef HAVE_OPENSSL
+                    EVP_CIPHER_free(cph);
+                    return NULL;
+#endif
+                }
+            }
+
+            EVP_EncryptInit_ex(enpub->enp_server_config->lsc_stk_ctx, cph, NULL,
+                               enpub->enp_server_config->lsc_scfg->info.skt_key,
+                               NULL);
+#ifdef HAVE_OPENSSL
+            EVP_CIPHER_free(cph);
+#endif
             return enpub->enp_server_config;
         }
         else
@@ -1851,8 +1899,12 @@ get_valid_scfg (const struct lsquic_enc_session *enc_session,
 
     server_config_sz = sizeof(*enpub->enp_server_config->lsc_scfg) + MSG_LEN_VAL(msg_len);
     enpub->enp_server_config->lsc_scfg = malloc(server_config_sz);
-    if (!enpub->enp_server_config->lsc_scfg)
+    if (!enpub->enp_server_config->lsc_scfg) {
+#ifdef HAVE_OPENSSL
+        EVP_CIPHER_free(cph);
+#endif
         return NULL;
+    }
 
     temp_scfg = &enpub->enp_server_config->lsc_scfg->info;
     RAND_bytes(temp_scfg->skt_key, sizeof(temp_scfg->skt_key));
@@ -1900,9 +1952,21 @@ get_valid_scfg (const struct lsquic_enc_session *enc_session,
         LSQ_DEBUG("get_valid_scfg got an shi internal error.\n");
     }
 
-    ret = EVP_AEAD_CTX_init(&enpub->enp_server_config->lsc_stk_ctx, EVP_aead_aes_128_gcm(),
-                              enpub->enp_server_config->lsc_scfg->info.skt_key,
-                              sizeof(enpub->enp_server_config->lsc_scfg->info.skt_key), 12, NULL);
+    if (enpub->enp_server_config->lsc_stk_ctx != NULL) {
+        enpub->enp_server_config->lsc_stk_ctx = EVP_CIPHER_CTX_new();
+        if (enpub->enp_server_config->lsc_stk_ctx == NULL) {
+#ifdef HAVE_OPENSSL
+            EVP_CIPHER_free(cph);
+            return NULL;
+#endif
+        }
+    }
+    ret = EVP_EncryptInit_ex(enpub->enp_server_config->lsc_stk_ctx, cph, NULL,
+                             enpub->enp_server_config->lsc_scfg->info.skt_key,
+                             NULL);
+#ifdef HAVE_OPENSSL
+    EVP_CIPHER_free(cph);
+#endif
 
     LSQ_DEBUG("get_valid_scfg::EVP_AEAD_CTX_init return %d.", ret);
     return enpub->enp_server_config;
@@ -2450,22 +2514,28 @@ static int handle_chlo_reply_verify_prof(struct lsquic_enc_session *enc_session,
 
 static void
 setup_aead_ctx (const struct lsquic_enc_session *enc_session,
-                EVP_AEAD_CTX **ctx, unsigned char key[], int key_len,
+                EVP_CIPHER_CTX **ctx, unsigned char key[], int key_len,
                 unsigned char *key_copy)
 {
-    const EVP_AEAD *aead_ = EVP_aead_aes_128_gcm();
-    const int auth_tag_size = enc_session->es_flags & ES_GQUIC2
-                                    ? IQUIC_TAG_LEN : GQUIC_PACKET_HASH_SZ;
+    const EVP_CIPHER *aead_;
+#ifdef HAVE_OPENSSL
+    aead_ = EVP_CIPHER_fetch(NULL, "AES-128-GCM", NULL);
+#else
+    aead_ = EVP_get_cipherbyname("AES-128-GCM");
+#endif
+
     if (*ctx)
     {
-        EVP_AEAD_CTX_cleanup(*ctx);
+        EVP_CIPHER_CTX_free(*ctx);
     }
-    else
-        *ctx = (EVP_AEAD_CTX *)malloc(sizeof(EVP_AEAD_CTX));
+    *ctx = EVP_CIPHER_CTX_new(); 
 
-    EVP_AEAD_CTX_init(*ctx, aead_, key, key_len, auth_tag_size, NULL);
+    EVP_EncryptInit_ex(*ctx, aead_, NULL, key, NULL);
     if (key_copy)
         memcpy(key_copy, key, key_len);
+#ifdef HAVE_OPENSSL
+    EVP_CIPHER_free(aead_);
+#endif
 }
 
 
@@ -2475,7 +2545,7 @@ determine_diversification_key (enc_session_t *enc_session_p,
 {
     struct lsquic_enc_session *const enc_session = enc_session_p;
     const int is_client = !(enc_session->es_flags & ES_SERVER);
-    EVP_AEAD_CTX **ctx_s_key;
+    EVP_CIPHER_CTX **ctx_s_key;
     unsigned char *key_i, *iv;
     const size_t iv_len = enc_session->es_flags & ES_GQUIC2
                                             ? IQUIC_IV_LEN : aes128_iv_len;
@@ -2538,7 +2608,7 @@ determine_keys (struct lsquic_enc_session *enc_session)
     uint8_t *c_hp, *s_hp;
     size_t nonce_len, hkdf_input_len;
     unsigned char sub_key[32];
-    EVP_AEAD_CTX **ctx_c_key, **ctx_s_key;
+    EVP_CIPHER_CTX **ctx_c_key, **ctx_s_key;
     char key_flag;
     char str_buf[512];
 
@@ -2900,7 +2970,7 @@ lsquic_gen_stk (lsquic_server_config_t *server_config, const struct sockaddr *ip
     memcpy(stk + 16, &tm, 8);
     RAND_bytes(stk + 24, STK_LENGTH - 24 - 12);
     RAND_bytes(stk_out + STK_LENGTH - 12, 12);
-    lsquic_aes_aead_enc(&server_config->lsc_stk_ctx, NULL, 0, stk_out + STK_LENGTH - 12, 12, stk,
+    lsquic_aes_aead_enc(server_config->lsc_stk_ctx, NULL, 0, stk_out + STK_LENGTH - 12, 12, stk,
                  STK_LENGTH - 12 - 12, stk_out, &out_len);
 }
 
@@ -2923,7 +2993,7 @@ lsquic_verify_stk0 (const struct lsquic_enc_session *enc_session,
     if (lsquic_str_len(stk) < STK_LENGTH)
         return HFR_SRC_ADDR_TOKEN_INVALID;
 
-    int ret = lsquic_aes_aead_dec(&server_config->lsc_stk_ctx, NULL, 0,
+    int ret = lsquic_aes_aead_dec(server_config->lsc_stk_ctx, NULL, 0,
                            stks + STK_LENGTH - 12, 12, stks,
                            STK_LENGTH - 12, stk_out, &out_len);
     if (ret != 0)
@@ -3056,7 +3126,7 @@ decrypt_packet (struct lsquic_enc_session *enc_session, uint8_t path_id,
     /* Comment: 12 = sizeof(dec_key_iv] 4 + sizeof(pack_num) 8 */
     uint8_t nonce[12];
     uint64_t path_id_packet_number;
-    EVP_AEAD_CTX *key = NULL;
+    EVP_CIPHER_CTX *key = NULL;
     int try_times = 0;
     enum enc_level enc_level;
 
@@ -3223,7 +3293,7 @@ gquic_encrypt_buf (struct lsquic_enc_session *enc_session,
     /* Comment: 12 = sizeof(dec_key_iv] 4 + sizeof(pack_num) 8 */
     uint8_t nonce[12];
     uint64_t path_id_packet_number;
-    EVP_AEAD_CTX *key;
+    EVP_CIPHER_CTX *key;
 
     if (enc_session)
         LSQ_DEBUG("%s: hsk_state: %d", __func__, enc_session->hsk_state);
@@ -3977,7 +4047,7 @@ gquic2_esf_encrypt_packet (enc_session_t *enc_session_p,
 {
     struct lsquic_enc_session *const enc_session = enc_session_p;
     struct lsquic_conn *const lconn = enc_session->es_conn;
-    EVP_AEAD_CTX *aead_ctx;
+    EVP_CIPHER_CTX *aead_ctx;
     unsigned char *dst;
     enum gel gel;
     unsigned char nonce_buf[ IQUIC_IV_LEN + 8 ];
@@ -3987,7 +4057,9 @@ gquic2_esf_encrypt_packet (enc_session_t *enc_session_p,
     int header_sz;
     int ipv6;
     unsigned packno_off, packno_len, sample_off, divers_nonce_len;
-    char errbuf[ERR_ERROR_STRING_BUF_LEN];
+    uint8_t *tagptr;
+    int tag_len = 16; /*AES-128-GCM*/
+    int cryptsz = 0;
 
     gel = hety2gel[ packet_out->po_header_type ];
     aead_ctx = enc_session->es_aead_ctxs[gel][0];
@@ -4053,14 +4125,26 @@ gquic2_esf_encrypt_packet (enc_session_t *enc_session_p,
             HEXSTR(packet_out->po_data, packet_out->po_data_sz, s_str));
     }
 
-    if (!EVP_AEAD_CTX_seal(aead_ctx, dst + header_sz, &out_sz,
-                dst_sz - header_sz, nonce, IQUIC_IV_LEN,
-                packet_out->po_data, packet_out->po_data_sz, dst, header_sz))
-    {
-        LSQ_WARN("cannot seal packet #%"PRIu64": %s", packet_out->po_packno,
-            ERR_error_string(ERR_get_error(), errbuf));
+    if (!EVP_EncryptInit_ex(aead_ctx, NULL, NULL, NULL, nonce))
         goto err;
-    }
+
+    if (!EVP_EncryptUpdate(aead_ctx, NULL, &cryptsz, dst, header_sz))
+        goto err;
+
+    if (!EVP_EncryptUpdate(aead_ctx, dst + header_sz, &cryptsz,
+                           packet_out->po_data, packet_out->po_data_sz))
+        goto err;
+
+    tagptr = packet_out->po_data + packet_out->po_data_sz;
+
+    if (!EVP_EncryptFinal_ex(aead_ctx, tagptr, &cryptsz))
+        goto err;
+
+    if (!EVP_CIPHER_CTX_ctrl(aead_ctx, EVP_CTRL_AEAD_GET_TAG, tag_len, tagptr))
+        goto err;
+
+    out_sz = cryptsz;
+
     assert(out_sz == dst_sz - header_sz);
 
     if (!packet_out->po_nonce)
@@ -4172,9 +4256,12 @@ gquic2_esf_decrypt_packet (enc_session_t *enc_session_p,
     enum gel gel;
     lsquic_packno_t packno;
     size_t out_sz;
-    enum dec_packin dec_packin;
+    enum dec_packin dec_packin = DECPI_OK;
     const size_t dst_sz = packet_in->pi_data_sz - IQUIC_TAG_LEN;
     char errbuf[ERR_ERROR_STRING_BUF_LEN];
+    int tag_len = 16; /*AES-128-GCM*/
+    uint8_t *tagptr;
+    int decryptsz = 0;
 
     dst = lsquic_mm_get_packet_in_buf(&enpub->enp_mm, dst_sz);
     if (!dst)
@@ -4250,39 +4337,31 @@ gquic2_esf_decrypt_packet (enc_session_t *enc_session_p,
                    packet_in->pi_data_sz - packet_in->pi_header_sz, s_str));
     }
 
-    if (!EVP_AEAD_CTX_open(enc_session->es_aead_ctxs[gel][1],
-                dst + packet_in->pi_header_sz, &out_sz,
-                dst_sz - packet_in->pi_header_sz, nonce, IQUIC_IV_LEN,
-                packet_in->pi_data + packet_in->pi_header_sz,
-                packet_in->pi_data_sz - packet_in->pi_header_sz,
-                dst, packet_in->pi_header_sz))
-    {
-        LSQ_INFO("cannot open packet #%"PRIu64": %s", packet_in->pi_packno,
-            ERR_error_string(ERR_get_error(), errbuf));
-        dec_packin = DECPI_BADCRYPT;
+    tagptr = packet_in->pi_data + packet_in->pi_header_sz - tag_len;
+
+    dec_packin = DECPI_BADCRYPT;
+
+    if (!EVP_DecryptInit_ex(enc_session->es_aead_ctxs[gel][1], NULL, NULL, NULL, nonce))
         goto err;
-    }
 
-    /* Bits 2 and 3 are not set and don't need to be checked in gQUIC */
-    if (packet_in->pi_flags & PI_OWN_DATA)
-        lsquic_mm_put_packet_in_buf(&enpub->enp_mm, packet_in->pi_data,
-                                                        packet_in->pi_data_sz);
-    packet_in->pi_data_sz = packet_in->pi_header_sz + out_sz;
-    packet_in->pi_data = dst;
-    packet_in->pi_flags |= PI_OWN_DATA | PI_DECRYPTED
-                        | (gel2el[gel] << PIBIT_ENC_LEV_SHIFT);
-    EV_LOG_CONN_EVENT(LSQUIC_LOG_CONN_ID, "decrypted packet %"PRIu64,
-                                                    packet_in->pi_packno);
-    if (packet_in->pi_packno > enc_session->es_max_packno)
-        enc_session->es_max_packno = packet_in->pi_packno;
-    return DECPI_OK;
+    if (!EVP_DecryptUpdate(enc_session->es_aead_ctxs[gel][1], NULL, &decryptsz, dst, packet_in->pi_header_sz))
+        goto err;
 
-  err:
-    if (dst)
-        lsquic_mm_put_packet_in_buf(&enpub->enp_mm, dst, dst_sz);
-    EV_LOG_CONN_EVENT(LSQUIC_LOG_CONN_ID, "could not decrypt packet (type %s, "
-        "number %"PRIu64")", lsquic_hety2str[packet_in->pi_header_type],
-                                                    packet_in->pi_packno);
+    if (!EVP_DecryptUpdate(enc_session->es_aead_ctxs[gel][1], dst + packet_in->pi_header_sz,
+                            &decryptsz, packet_in->pi_data + packet_in->pi_header_sz,
+                            packet_in->pi_data_sz - packet_in->pi_header_sz - tag_len))
+        goto err;
+
+    if (!EVP_CIPHER_CTX_ctrl(enc_session->es_aead_ctxs[gel][1], EVP_CTRL_AEAD_SET_TAG, tag_len, tagptr))
+        goto err;
+     
+    if (!EVP_DecryptFinal_ex(enc_session->es_aead_ctxs[gel][1], tagptr, &decryptsz))
+        goto err;
+    dec_packin = DECPI_OK;
+    out_sz = decryptsz;
+
+err:
+
     return dec_packin;
 }
 

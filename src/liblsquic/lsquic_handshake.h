@@ -78,7 +78,7 @@ typedef struct SCFG_st SCFG_t;
 typedef struct lsquic_server_config
 {
     SCFG_t         *lsc_scfg;   /* This part is stored in SHM */
-    EVP_AEAD_CTX    lsc_stk_ctx;
+    EVP_CIPHER_CTX *lsc_stk_ctx;
 } lsquic_server_config_t;
 
 /* Based on enum HandshakeFailureReason in Chromium */

@@ -4,6 +4,7 @@
 #define __LSQUIC_CRYPTO_H__
 
 #include <stdint.h>
+#include "lsquic_crypto_backend.h"
 
 #define HS_PKT_HASH_LENGTH 12
 

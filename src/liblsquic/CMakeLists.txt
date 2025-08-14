@@ -84,6 +84,10 @@ SET(lsquic_STAT_SRCS
     lsquic_version.c
 )
 
+IF("${QUIC_TLS_LIB}" STREQUAL "BORINGSSL")
+LIST(APPEND lsquic_STAT_SRCS lsquic_crypto_boringssl.c)
+ENDIF()
+
 IF(NOT MSVC)
     SET(QPACK_FLAGS "-Wno-uninitialized")
     INCLUDE(CheckCCompilerFlag)

@@ -31,6 +31,7 @@
 #include "lsquic_util.h"
 #include "lsquic_mm.h"
 #include "lsquic_engine_public.h"
+#include "lsquic_crypto.h"
 
 #define LSQUIC_LOGGER_MODULE LSQLM_TOKGEN
 #include "lsquic_logger.h"
@@ -526,9 +527,9 @@ lsquic_tg_validate_token (struct token_generator *tokgen,
     encr_token = nonce + RETRY_NONCE_LEN;
     encr_token_len = packet_in->pi_token_size - RETRY_NONCE_LEN;
     decr_token_len = sizeof(decr_token);
-    if (!EVP_AEAD_CTX_open(&crypter->ctx, decr_token, &decr_token_len,
-                           decr_token_len, nonce, RETRY_NONCE_LEN,
-                           encr_token, encr_token_len, ad, ad_len))
+    if (!lsquic_aead_open(&crypter->ctx, decr_token, &decr_token_len,
+                          decr_token_len, nonce, RETRY_NONCE_LEN,
+                          encr_token, encr_token_len, ad, ad_len))
     {
         LSQ_DEBUGC("packet for connection %"CID_FMT" has undecryptable %s "
             "token %s: validation failed", CID_BITS(&packet_in->pi_dcid),
@@ -760,8 +761,8 @@ tokgen_generate_token (struct token_generator *tokgen,
     in_len = p - buf - RETRY_NONCE_LEN;
     if (LSQ_LOG_ENABLED(LSQ_LOG_DEBUG))
         lsquic_hexstr(in, in_len, in_str, sizeof(in_str));
-    if (EVP_AEAD_CTX_seal(&crypter->ctx, in, &len, len,
-                buf, RETRY_NONCE_LEN, in, in_len, ad_buf, ad_len))
+    if (lsquic_aead_seal(&crypter->ctx, in, &len, len,
+                         buf, RETRY_NONCE_LEN, in, in_len, ad_buf, ad_len))
     {
         ++crypter->nonce_counter;
         LSQ_DEBUG("in: %s, ad: %s -> %s token: %s (%zu bytes)",

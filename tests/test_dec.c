@@ -17,6 +17,8 @@
 #include <openssl/aead.h>
 #include <openssl/rand.h>
 
+#include "lsquic_crypto.h"
+
 #define MAX_SIZE 1400
 
 int
@@ -53,8 +55,9 @@ main (int argc, char **argv)
 
     EVP_AEAD_CTX_init(&aead_ctx, EVP_aead_aes_128_gcm(), key, sizeof(key),
                                                                     12, NULL);
-    r = EVP_AEAD_CTX_seal(&aead_ctx, sealed, &sealed_len, MAX_SIZE,
-                              key, sizeof(key), data, sizeof(data), NULL, 0);
+
+    r = lsquic_aead_seal(&aead_ctx, sealed, &sealed_len, MAX_SIZE,
+                         key, sizeof(key), data, sizeof(data), NULL, 0);
     if (!r)
     {
         fprintf(stderr, "cannot seal\n");
@@ -65,8 +68,8 @@ main (int argc, char **argv)
                             ((uintptr_t) sealed & (64 - 1)) ?  "not " : "");
 
     /* Check that decryption works first time around */
-    r = EVP_AEAD_CTX_open(&aead_ctx, opened, &opened_len, MAX_SIZE,
-                          key, sizeof(key), sealed, sealed_len, NULL, 0);
+    r = lsquic_aead_open(&aead_ctx, opened, &opened_len, MAX_SIZE,
+                         key, sizeof(key), sealed, sealed_len, NULL, 0);
     assert(r && opened_len == sizeof(data) &&
                                 0 == memcmp(data, opened, sizeof(data)));
     --n;
@@ -74,8 +77,8 @@ main (int argc, char **argv)
     /* Do no bother checking return value in the loop */
     while (n-- > 0)
     {
-        EVP_AEAD_CTX_open(&aead_ctx, opened, &opened_len, MAX_SIZE,
-                          key, sizeof(key), sealed, sealed_len, NULL, 0);
+        lsquic_aead_open(&aead_ctx, opened, &opened_len, MAX_SIZE,
+                         key, sizeof(key), sealed, sealed_len, NULL, 0);
     }
 
     exit(EXIT_SUCCESS);

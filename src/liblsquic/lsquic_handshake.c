@@ -4053,9 +4053,9 @@ gquic2_esf_encrypt_packet (enc_session_t *enc_session_p,
             HEXSTR(packet_out->po_data, packet_out->po_data_sz, s_str));
     }
 
-    if (!EVP_AEAD_CTX_seal(aead_ctx, dst + header_sz, &out_sz,
-                dst_sz - header_sz, nonce, IQUIC_IV_LEN,
-                packet_out->po_data, packet_out->po_data_sz, dst, header_sz))
+    if (!lsquic_aead_seal(aead_ctx, dst + header_sz, &out_sz,
+                          dst_sz - header_sz, nonce, IQUIC_IV_LEN,
+                          packet_out->po_data, packet_out->po_data_sz, dst, header_sz))
     {
         LSQ_WARN("cannot seal packet #%"PRIu64": %s", packet_out->po_packno,
             ERR_error_string(ERR_get_error(), errbuf));
@@ -4250,7 +4250,7 @@ gquic2_esf_decrypt_packet (enc_session_t *enc_session_p,
                    packet_in->pi_data_sz - packet_in->pi_header_sz, s_str));
     }
 
-    if (!EVP_AEAD_CTX_open(enc_session->es_aead_ctxs[gel][1],
+    if (!lsquic_aead_open(enc_session->es_aead_ctxs[gel][1],
                 dst + packet_in->pi_header_sz, &out_sz,
                 dst_sz - packet_in->pi_header_sz, nonce, IQUIC_IV_LEN,
                 packet_in->pi_data + packet_in->pi_header_sz,

@@ -80,6 +80,7 @@
 #include "lsquic_crand.h"
 #include "ls-sfparser.h"
 #include "lsquic_qpack_exp.h"
+#include "lsquic_crypto.h"
 
 #define LSQUIC_LOGGER_MODULE LSQLM_CONN
 #define LSQUIC_LOG_CONN_ID lsquic_conn_log_cid(&conn->ifc_conn)
@@ -7266,12 +7267,12 @@ verify_retry_packet (struct ietf_full_conn *conn,
     ret_ver = lsquic_version_2_retryver(conn->ifc_conn.cn_version);
     out_len = 0;
     ad_len = 1 + CUR_DCID(conn)->len + packet_in->pi_data_sz - 16;
-    verified = 1 == EVP_AEAD_CTX_open(
+    verified = 1 == lsquic_aead_open(
                     &conn->ifc_enpub->enp_retry_aead_ctx[ret_ver],
                     pseudo_packet + ad_len, &out_len, out_len,
                     lsquic_retry_nonce_buf[ret_ver], IETF_RETRY_NONCE_SZ,
                     pseudo_packet + ad_len, 16, pseudo_packet, ad_len)
-            && out_len == 0;
+                    && out_len == 0;
 
     lsquic_mm_put_4k(conn->ifc_pub.mm, pseudo_packet);
     return verified ? 0 : -1;

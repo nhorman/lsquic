@@ -42,6 +42,7 @@
 #include "lsquic_tokgen.h"
 #include "lsquic_ietf.h"
 #include "lsquic_alarmset.h"
+#include "lsquic_crypto.h"
 
 #if __GNUC__
 #   define UNLIKELY(cond) __builtin_expect(cond, 0)
@@ -2230,9 +2231,9 @@ iquic_esf_encrypt_packet (enc_session_t *enc_session_p,
         LSQ_DEBUG("seal: in (%u bytes): %s", packet_out->po_data_sz,
             HEXSTR(packet_out->po_data, packet_out->po_data_sz, s_str));
     }
-    if (!EVP_AEAD_CTX_seal(&crypto_ctx->yk_aead_ctx, dst + header_sz, &out_sz,
-                dst_sz - header_sz, nonce, crypto_ctx->yk_iv_sz, packet_out->po_data,
-                packet_out->po_data_sz, dst, header_sz))
+    if (!lsquic_aead_seal(&crypto_ctx->yk_aead_ctx, dst + header_sz, &out_sz,
+                          dst_sz - header_sz, nonce, crypto_ctx->yk_iv_sz, packet_out->po_data,
+                          packet_out->po_data_sz, dst, header_sz))
     {
         LSQ_WARN("cannot seal packet #%"PRIu64": %s", packet_out->po_packno,
             ERR_error_string(ERR_get_error(), errbuf));
@@ -2468,12 +2469,11 @@ iquic_esf_decrypt_packet (enc_session_t *enc_session_p,
             + packet_in->pi_header_sz, packet_in->pi_data_sz
             - packet_in->pi_header_sz, s_str));
     }
-    if (!EVP_AEAD_CTX_open(&crypto_ctx->yk_aead_ctx,
-                dst + packet_in->pi_header_sz, &out_sz,
-                dst_sz - packet_in->pi_header_sz, nonce, crypto_ctx->yk_iv_sz,
-                packet_in->pi_data + packet_in->pi_header_sz,
-                packet_in->pi_data_sz - packet_in->pi_header_sz,
-                dst, packet_in->pi_header_sz))
+    if (!lsquic_aead_open(&crypto_ctx->yk_aead_ctx, dst + packet_in->pi_header_sz, &out_sz,
+                          dst_sz - packet_in->pi_header_sz, nonce, crypto_ctx->yk_iv_sz,
+                          packet_in->pi_data + packet_in->pi_header_sz,
+                          packet_in->pi_data_sz - packet_in->pi_header_sz,
+                          dst, packet_in->pi_header_sz))
     {
         LSQ_INFO("cannot open packet #%"PRIu64": %s", packet_in->pi_packno,
             ERR_error_string(ERR_get_error(), errbuf));

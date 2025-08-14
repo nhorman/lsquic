@@ -29,7 +29,7 @@
 #include "lsquic_mm.h"
 #include "lsquic_engine_public.h"
 #include "lsquic_ietf.h"
-
+#include "lsquic_crypto.h"
 
 /* [draft-ietf-quic-transport-17] Section-17.2 */
 static const enum header_type bits2ht[4] =
@@ -441,10 +441,10 @@ lsquic_iquic_gen_retry_pkt (unsigned char *buf, size_t bufsz,
 
     ret_ver = lsquic_version_2_retryver(version);
     out_len = sizeof(tag);
-    if (!(1 == EVP_AEAD_CTX_seal(&enpub->enp_retry_aead_ctx[ret_ver], tag,
-                &out_len, out_len, lsquic_retry_nonce_buf[ret_ver],
-                IETF_RETRY_NONCE_SZ,
-                NULL, 0, ad_buf, ad_len) && out_len == sizeof(tag)))
+    if (!(1 == lsquic_aead_seal(&enpub->enp_retry_aead_ctx[ret_ver], tag,
+                                &out_len, out_len, lsquic_retry_nonce_buf[ret_ver],
+                                IETF_RETRY_NONCE_SZ, NULL, 0, ad_buf, ad_len)
+                                && out_len == sizeof(tag)))
         return -1;
 
     memcpy(buf, ad_buf + 1 + dcid->len, ad_len - 1 - dcid->len);

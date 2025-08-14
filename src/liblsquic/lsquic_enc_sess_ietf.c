@@ -138,7 +138,7 @@ struct crypto_ctx
     enum {
         YK_INITED = 1 << 0,
     }                   yk_flags;
-    EVP_AEAD_CTX        yk_aead_ctx;
+    void                *yk_aead_ctx;
     unsigned            yk_key_sz;
     unsigned            yk_iv_sz;
     unsigned char       yk_key_buf[EVP_MAX_KEY_LENGTH];
@@ -181,7 +181,7 @@ static struct label_set hkdf_labels[2] =
 static int
 init_crypto_ctx (struct crypto_ctx *crypto_ctx, const EVP_MD *md,
                  const EVP_AEAD *aead, const unsigned char *secret,
-                 size_t secret_sz, enum evp_aead_direction_t dir,
+                 size_t secret_sz, unsigned dir,
                  struct label_set *key_iv)
 {
     crypto_ctx->yk_key_sz = EVP_AEAD_key_length(aead);
@@ -197,8 +197,10 @@ init_crypto_ctx (struct crypto_ctx *crypto_ctx, const EVP_MD *md,
         crypto_ctx->yk_key_buf, crypto_ctx->yk_key_sz);
     lsquic_qhkdf_expand(md, secret, secret_sz, key_iv->iv, key_iv->iv_len,
         crypto_ctx->yk_iv_buf, crypto_ctx->yk_iv_sz);
-    if (!EVP_AEAD_CTX_init_with_direction(&crypto_ctx->yk_aead_ctx, aead,
-            crypto_ctx->yk_key_buf, crypto_ctx->yk_key_sz, IQUIC_TAG_LEN, dir))
+    crypto_ctx->yk_aead_ctx = lsquic_aead_ctx_alloc((void *)aead, crypto_ctx->yk_key_buf,
+                                                    crypto_ctx->yk_key_sz,
+                                                    IQUIC_TAG_LEN, dir);
+    if (crypto_ctx->yk_aead_ctx == NULL)
         return -1;
 
     crypto_ctx->yk_flags |= YK_INITED;
@@ -212,7 +214,8 @@ cleanup_crypto_ctx (struct crypto_ctx *crypto_ctx)
 {
     if (crypto_ctx->yk_flags & YK_INITED)
     {
-        EVP_AEAD_CTX_cleanup(&crypto_ctx->yk_aead_ctx);
+        lsquic_aead_ctx_free(crypto_ctx->yk_aead_ctx);
+        crypto_ctx->yk_aead_ctx = NULL;
         crypto_ctx->yk_flags &= ~YK_INITED;
     }
 }
@@ -1198,10 +1201,10 @@ setup_handshake_keys (struct enc_sess_iquic *enc_sess, const lsquic_cid_t *cid)
     labels = &hkdf_labels[enc_sess->esi_conn->cn_version == LSQVER_I002];
     cliser = !!(enc_sess->esi_flags & ESI_SERVER);
     if (0 != init_crypto_ctx(&pair->ykp_ctx[!cliser], md, aead, secret[0],
-                sizeof(secret[0]), rw2dir(!cliser), labels))
+                sizeof(secret[0]), !cliser, labels))
         goto err;
     if (0 != init_crypto_ctx(&pair->ykp_ctx[cliser], md, aead, secret[1],
-                sizeof(secret[1]), rw2dir(cliser), labels))
+                sizeof(secret[1]), cliser, labels))
         goto err;
 
     hp->hp_gen_mask = gen_hp_mask_aes;
@@ -2231,7 +2234,7 @@ iquic_esf_encrypt_packet (enc_session_t *enc_session_p,
         LSQ_DEBUG("seal: in (%u bytes): %s", packet_out->po_data_sz,
             HEXSTR(packet_out->po_data, packet_out->po_data_sz, s_str));
     }
-    if (!lsquic_aead_seal(&crypto_ctx->yk_aead_ctx, dst + header_sz, &out_sz,
+    if (!lsquic_aead_seal(crypto_ctx->yk_aead_ctx, dst + header_sz, &out_sz,
                           dst_sz - header_sz, nonce, crypto_ctx->yk_iv_sz, packet_out->po_data,
                           packet_out->po_data_sz, dst, header_sz))
     {
@@ -2469,7 +2472,7 @@ iquic_esf_decrypt_packet (enc_session_t *enc_session_p,
             + packet_in->pi_header_sz, packet_in->pi_data_sz
             - packet_in->pi_header_sz, s_str));
     }
-    if (!lsquic_aead_open(&crypto_ctx->yk_aead_ctx, dst + packet_in->pi_header_sz, &out_sz,
+    if (!lsquic_aead_open(crypto_ctx->yk_aead_ctx, dst + packet_in->pi_header_sz, &out_sz,
                           dst_sz - packet_in->pi_header_sz, nonce, crypto_ctx->yk_iv_sz,
                           packet_in->pi_data + packet_in->pi_header_sz,
                           packet_in->pi_data_sz - packet_in->pi_header_sz,

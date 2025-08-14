@@ -21,11 +21,23 @@
 #include "lsquic_logger.h"
 
 
-void *lsquic_aead_ctx_alloc(uint8_t *key, size_t key_len, size_t tag_len)
+void *lsquic_aead_ctx_alloc(void *aead, uint8_t *key, size_t key_len, size_t tag_len, unsigned dir)
 {
     EVP_AEAD_CTX *new;
+    EVP_AEAD *_aead = (EVP_AEAD *)aead;
+    enum evp_aead_direction_t mydir;
 
-    new = EVP_AEAD_CTX_new(EVP_aead_aes_128_gcm(), key, key_len, tag_len);
+    new = EVP_AEAD_CTX_new(_aead, key, key_len, tag_len);
+
+    if (new != NULL && dir != 2) {
+        mydir = (dir == 0) ? evp_aead_open : evp_aead_seal;
+        EVP_AEAD_CTX_cleanup(new);
+        if (!EVP_AEAD_CTX_init_with_direction(new, _aead, key,
+                                              key_len, tag_len, mydir)) {
+           EVP_AEAD_CTX_free(new);
+           new = NULL;
+        }
+    }
 
     return (void *)new;
 }

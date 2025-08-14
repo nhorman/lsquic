@@ -836,8 +836,9 @@ lsquic_engine_new (unsigned flags,
     engine->stats_fh = api->ea_stats_fh;
 #endif
     for (i = 0; i < N_IETF_RETRY_VERSIONS; ++i) {
-        engine->retry_aead_ctx[i] = lsquic_aead_ctx_alloc((uint8_t *)lsquic_retry_key_buf[i],
-                                                          IETF_RETRY_KEY_SZ, 16);
+        engine->retry_aead_ctx[i] = lsquic_aead_ctx_alloc(EVP_aead_aes_128_gcm(),
+                                                          (uint8_t *)lsquic_retry_key_buf[i],
+                                                          IETF_RETRY_KEY_SZ, 16, 2);
         if (engine->retry_aead_ctx[i] == NULL)
         {
             LSQ_ERROR("could not initialize retry AEAD ctx #%u", i);

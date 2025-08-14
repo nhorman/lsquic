@@ -2,7 +2,7 @@
 #ifndef __LSQUIC_CRYPTO_BACKEND_H__
 #define __LSQUIC_CRYPTO_BACKEND_H__
 
-void *lsquic_aead_ctx_alloc(uint8_t *key, size_t key_len, size_t tag_len);
+void *lsquic_aead_ctx_alloc(void *aead, uint8_t *key, size_t key_len, size_t tag_len, unsigned dir);
 
 void lsquic_aead_ctx_free(void *ctx);
 

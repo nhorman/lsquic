@@ -69,7 +69,7 @@ struct lsquic_engine_public {
     unsigned char                   enp_ver_tags_buf[ sizeof(lsquic_ver_tag_t) * N_LSQVER ];
     unsigned                        enp_ver_tags_len;
     struct crand                   *enp_crand;
-    struct evp_aead_ctx_st         *enp_retry_aead_ctx;
+    void                           **enp_retry_aead_ctx;
     unsigned char                  *enp_alpn;   /* May be set if not HTTP */
     /* es_noprogress_timeout converted to microseconds for speed */
     lsquic_time_t                   enp_noprog_timeout;

@@ -7268,7 +7268,7 @@ verify_retry_packet (struct ietf_full_conn *conn,
     out_len = 0;
     ad_len = 1 + CUR_DCID(conn)->len + packet_in->pi_data_sz - 16;
     verified = 1 == lsquic_aead_open(
-                    &conn->ifc_enpub->enp_retry_aead_ctx[ret_ver],
+                    conn->ifc_enpub->enp_retry_aead_ctx[ret_ver],
                     pseudo_packet + ad_len, &out_len, out_len,
                     lsquic_retry_nonce_buf[ret_ver], IETF_RETRY_NONCE_SZ,
                     pseudo_packet + ad_len, 16, pseudo_packet, ad_len)

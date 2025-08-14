@@ -88,6 +88,7 @@
 #include "lsquic_handshake.h"
 #include "lsquic_crand.h"
 #include "lsquic_ietf.h"
+#include "lsquic_crypto.h"
 
 #define LSQUIC_LOGGER_MODULE LSQLM_ENGINE
 #include "lsquic_logger.h"
@@ -285,7 +286,7 @@ struct lsquic_engine
     int                                last_tick_diff;
 #endif
     struct crand                       crand;
-    EVP_AEAD_CTX                       retry_aead_ctx[N_IETF_RETRY_VERSIONS];
+    void                               *retry_aead_ctx[N_IETF_RETRY_VERSIONS];
 #if LSQUIC_CONN_STATS
     struct {
         uint16_t            immed_ticks;    /* bitmask */
@@ -834,16 +835,16 @@ lsquic_engine_new (unsigned flags,
 #if LSQUIC_CONN_STATS
     engine->stats_fh = api->ea_stats_fh;
 #endif
-    for (i = 0; i < sizeof(engine->retry_aead_ctx)
-                                    / sizeof(engine->retry_aead_ctx[0]); ++i)
-        if (1 != EVP_AEAD_CTX_init(&engine->retry_aead_ctx[i],
-                        EVP_aead_aes_128_gcm(), lsquic_retry_key_buf[i],
-                        IETF_RETRY_KEY_SZ, 16, NULL))
+    for (i = 0; i < N_IETF_RETRY_VERSIONS; ++i) {
+        engine->retry_aead_ctx[i] = lsquic_aead_ctx_alloc((uint8_t *)lsquic_retry_key_buf[i],
+                                                          IETF_RETRY_KEY_SZ, 16);
+        if (engine->retry_aead_ctx[i] == NULL)
         {
             LSQ_ERROR("could not initialize retry AEAD ctx #%u", i);
             lsquic_engine_destroy(engine);
             return NULL;
         }
+    }
     engine->pub.enp_retry_aead_ctx = engine->retry_aead_ctx;
 
     LSQ_INFO("instantiated engine");
@@ -1915,9 +1916,10 @@ lsquic_engine_destroy (lsquic_engine_t *engine)
 #if LSQUIC_COUNT_ENGINE_CALLS
     LSQ_NOTICE("number of calls into the engine: %lu", engine->n_engine_calls);
 #endif
-    for (i = 0; i < sizeof(engine->retry_aead_ctx)
-                                    / sizeof(engine->retry_aead_ctx[0]); ++i)
-        EVP_AEAD_CTX_cleanup(&engine->pub.enp_retry_aead_ctx[i]);
+    for (i = 0; i < N_IETF_RETRY_VERSIONS; ++i) {
+        lsquic_aead_ctx_free(engine->pub.enp_retry_aead_ctx[i]);
+        engine->pub.enp_retry_aead_ctx[i] = NULL;
+    }
     free(engine->pub.enp_alpn);
     free(engine);
 }

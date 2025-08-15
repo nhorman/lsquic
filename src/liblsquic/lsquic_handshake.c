@@ -267,7 +267,7 @@ struct lsquic_enc_session
 #define dec_ctx_i es_aead_ctxs[GEL_EARLY][1]
 #define enc_ctx_f es_aead_ctxs[GEL_FORW][0]
 #define dec_ctx_f es_aead_ctxs[GEL_FORW][1]
-    EVP_AEAD_CTX    *es_aead_ctxs[N_GELS][2];
+    void          *es_aead_ctxs[N_GELS][2];
 
 #define enc_key_nonce_i es_ivs[GEL_EARLY][0]
 #define dec_key_nonce_i es_ivs[GEL_EARLY][1]
@@ -700,17 +700,10 @@ gquic2_init_crypto_ctx (struct lsquic_enc_session *enc_session,
     lsquic_qhkdf_expand(md, secret, secret_sz, PN_LABEL, PN_LABEL_SZ,
         enc_session->es_hps[GEL_CLEAR][idx], IQUIC_HP_LEN);
     assert(!enc_session->es_aead_ctxs[GEL_CLEAR][idx]);
-    enc_session->es_aead_ctxs[GEL_CLEAR][idx]
-                = malloc(sizeof(*enc_session->es_aead_ctxs[GEL_CLEAR][idx]));
+    enc_session->es_aead_ctxs[GEL_CLEAR][idx] = lsquic_aead_ctx_alloc((void *)aead, key, sizeof(key),
+                                                                      IQUIC_TAG_LEN, 2);
     if (!enc_session->es_aead_ctxs[GEL_CLEAR][idx])
         return -1;
-    if (!EVP_AEAD_CTX_init(enc_session->es_aead_ctxs[GEL_CLEAR][idx], aead,
-                                    key, sizeof(key), IQUIC_TAG_LEN, NULL))
-    {
-        free(enc_session->es_aead_ctxs[GEL_CLEAR][idx]);
-        enc_session->es_aead_ctxs[GEL_CLEAR][idx] = NULL;
-        return -1;
-    }
     return 0;
 }
 
@@ -966,8 +959,7 @@ lsquic_enc_session_destroy (enc_session_t *enc_session_p)
         for (i = 0; i < 2; ++i)
             if (enc_session->es_aead_ctxs[gel][i])
             {
-                EVP_AEAD_CTX_cleanup(enc_session->es_aead_ctxs[gel][i]);
-                free(enc_session->es_aead_ctxs[gel][i]);
+                lsquic_aead_ctx_free(enc_session->es_aead_ctxs[gel][i]);
             }
     memset(enc_session->es_aead_ctxs, 0, sizeof(enc_session->es_aead_ctxs));
     if (enc_session->info)
@@ -2450,7 +2442,7 @@ static int handle_chlo_reply_verify_prof(struct lsquic_enc_session *enc_session,
 
 static void
 setup_aead_ctx (const struct lsquic_enc_session *enc_session,
-                EVP_AEAD_CTX **ctx, unsigned char key[], int key_len,
+                void **ctx, unsigned char key[], int key_len,
                 unsigned char *key_copy)
 {
     const EVP_AEAD *aead_ = EVP_aead_aes_128_gcm();
@@ -2458,12 +2450,11 @@ setup_aead_ctx (const struct lsquic_enc_session *enc_session,
                                     ? IQUIC_TAG_LEN : GQUIC_PACKET_HASH_SZ;
     if (*ctx)
     {
-        EVP_AEAD_CTX_cleanup(*ctx);
+        lsquic_aead_ctx_free(*ctx);
     }
     else
-        *ctx = (EVP_AEAD_CTX *)malloc(sizeof(EVP_AEAD_CTX));
+        *ctx = lsquic_aead_ctx_alloc((void *)aead_, key, key_len, auth_tag_size, 2);
 
-    EVP_AEAD_CTX_init(*ctx, aead_, key, key_len, auth_tag_size, NULL);
     if (key_copy)
         memcpy(key_copy, key, key_len);
 }
@@ -2475,7 +2466,7 @@ determine_diversification_key (enc_session_t *enc_session_p,
 {
     struct lsquic_enc_session *const enc_session = enc_session_p;
     const int is_client = !(enc_session->es_flags & ES_SERVER);
-    EVP_AEAD_CTX **ctx_s_key;
+    void **ctx_s_key;
     unsigned char *key_i, *iv;
     const size_t iv_len = enc_session->es_flags & ES_GQUIC2
                                             ? IQUIC_IV_LEN : aes128_iv_len;
@@ -2538,7 +2529,7 @@ determine_keys (struct lsquic_enc_session *enc_session)
     uint8_t *c_hp, *s_hp;
     size_t nonce_len, hkdf_input_len;
     unsigned char sub_key[32];
-    EVP_AEAD_CTX **ctx_c_key, **ctx_s_key;
+    void **ctx_c_key, **ctx_s_key;
     char key_flag;
     char str_buf[512];
 
@@ -3977,7 +3968,7 @@ gquic2_esf_encrypt_packet (enc_session_t *enc_session_p,
 {
     struct lsquic_enc_session *const enc_session = enc_session_p;
     struct lsquic_conn *const lconn = enc_session->es_conn;
-    EVP_AEAD_CTX *aead_ctx;
+    void *aead_ctx;
     unsigned char *dst;
     enum gel gel;
     unsigned char nonce_buf[ IQUIC_IV_LEN + 8 ];

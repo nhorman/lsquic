@@ -1818,11 +1818,16 @@ get_valid_scfg (const struct lsquic_enc_session *enc_session,
                 (enpub->enp_server_config->lsc_scfg = scfg_ptr,
                             enpub->enp_server_config->lsc_scfg->info.expy > (uint64_t)t))
         {
+            lsquic_aead_ctx_free(enpub->enp_server_config->lsc_stk_ctx);
             /* Why need to init here, because this memory may be read from SHM,
              * the struct is ready but AEAD_CTX is not ready.
              **/
-            EVP_AEAD_CTX_init(&enpub->enp_server_config->lsc_stk_ctx, EVP_aead_aes_128_gcm(),
-                              enpub->enp_server_config->lsc_scfg->info.skt_key, 16, 12, NULL);
+            enpub->enp_server_config->lsc_stk_ctx =
+                lsquic_aead_ctx_alloc(EVP_aead_aes_128_gcm(),
+                                      enpub->enp_server_config->lsc_scfg->info.skt_key,
+                                      16, 12, 2);
+            if (enpub->enp_server_config->lsc_stk_ctx == NULL)
+                return NULL;
             return enpub->enp_server_config;
         }
         else
@@ -1892,9 +1897,14 @@ get_valid_scfg (const struct lsquic_enc_session *enc_session,
         LSQ_DEBUG("get_valid_scfg got an shi internal error.\n");
     }
 
-    ret = EVP_AEAD_CTX_init(&enpub->enp_server_config->lsc_stk_ctx, EVP_aead_aes_128_gcm(),
+    lsquic_aead_ctx_free(enpub->enp_server_config->lsc_stk_ctx);
+    enpub->enp_server_config->lsc_stk_ctx =
+        lsquic_aead_ctx_alloc(EVP_aead_aes_128_gcm(),
                               enpub->enp_server_config->lsc_scfg->info.skt_key,
-                              sizeof(enpub->enp_server_config->lsc_scfg->info.skt_key), 12, NULL);
+                              sizeof(enpub->enp_server_config->lsc_scfg->info.skt_key),
+                              12, 2);
+
+    ret = enpub->enp_server_config->lsc_stk_ctx == NULL ? 0 : 1;
 
     LSQ_DEBUG("get_valid_scfg::EVP_AEAD_CTX_init return %d.", ret);
     return enpub->enp_server_config;
@@ -2891,7 +2901,7 @@ lsquic_gen_stk (lsquic_server_config_t *server_config, const struct sockaddr *ip
     memcpy(stk + 16, &tm, 8);
     RAND_bytes(stk + 24, STK_LENGTH - 24 - 12);
     RAND_bytes(stk_out + STK_LENGTH - 12, 12);
-    lsquic_aes_aead_enc(&server_config->lsc_stk_ctx, NULL, 0, stk_out + STK_LENGTH - 12, 12, stk,
+    lsquic_aes_aead_enc(server_config->lsc_stk_ctx, NULL, 0, stk_out + STK_LENGTH - 12, 12, stk,
                  STK_LENGTH - 12 - 12, stk_out, &out_len);
 }
 
@@ -2914,7 +2924,7 @@ lsquic_verify_stk0 (const struct lsquic_enc_session *enc_session,
     if (lsquic_str_len(stk) < STK_LENGTH)
         return HFR_SRC_ADDR_TOKEN_INVALID;
 
-    int ret = lsquic_aes_aead_dec(&server_config->lsc_stk_ctx, NULL, 0,
+    int ret = lsquic_aes_aead_dec(server_config->lsc_stk_ctx, NULL, 0,
                            stks + STK_LENGTH - 12, 12, stks,
                            STK_LENGTH - 12, stk_out, &out_len);
     if (ret != 0)

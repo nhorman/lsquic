@@ -24,7 +24,7 @@
 int
 main (int argc, char **argv)
 {
-    EVP_AEAD_CTX aead_ctx;
+    void *aead_ctx;
     int opt, n = 1, r;
     size_t sealed_len, opened_len;
     unsigned char key[16];
@@ -53,10 +53,14 @@ main (int argc, char **argv)
     RAND_bytes(key, sizeof(key));
     RAND_bytes(data, sizeof(data));
 
-    EVP_AEAD_CTX_init(&aead_ctx, EVP_aead_aes_128_gcm(), key, sizeof(key),
-                                                                    12, NULL);
+    aead_ctx = lsquic_aead_ctx_alloc(EVP_aead_aes_128_gcm(), key, sizeof(key),
+                                     12, 2);
+    if (aead_ctx == NULL) {
+        fprintf(stderr, "cannot alloc ctx\n");
+        exit(EXIT_FAILURE);
+    }
 
-    r = lsquic_aead_seal(&aead_ctx, sealed, &sealed_len, MAX_SIZE,
+    r = lsquic_aead_seal(aead_ctx, sealed, &sealed_len, MAX_SIZE,
                          key, sizeof(key), data, sizeof(data), NULL, 0);
     if (!r)
     {
@@ -68,7 +72,7 @@ main (int argc, char **argv)
                             ((uintptr_t) sealed & (64 - 1)) ?  "not " : "");
 
     /* Check that decryption works first time around */
-    r = lsquic_aead_open(&aead_ctx, opened, &opened_len, MAX_SIZE,
+    r = lsquic_aead_open(aead_ctx, opened, &opened_len, MAX_SIZE,
                          key, sizeof(key), sealed, sealed_len, NULL, 0);
     assert(r && opened_len == sizeof(data) &&
                                 0 == memcmp(data, opened, sizeof(data)));
@@ -77,9 +81,10 @@ main (int argc, char **argv)
     /* Do no bother checking return value in the loop */
     while (n-- > 0)
     {
-        lsquic_aead_open(&aead_ctx, opened, &opened_len, MAX_SIZE,
+        lsquic_aead_open(aead_ctx, opened, &opened_len, MAX_SIZE,
                          key, sizeof(key), sealed, sealed_len, NULL, 0);
     }
 
+    lsquic_aead_ctx_free(aead_ctx);
     exit(EXIT_SUCCESS);
 }

@@ -75,7 +75,7 @@ static const uint8_t srst_salt[8] = "\x28\x6e\x81\x02\x40\x5b\x2c\x2b";
 
 struct crypter
 {
-    EVP_AEAD_CTX    ctx;
+    void            *ctx;
     unsigned long   nonce_counter;
     size_t          nonce_prk_sz;
     uint8_t         nonce_prk_buf[EVP_MAX_MD_SIZE];
@@ -270,9 +270,11 @@ lsquic_tg_new (struct lsquic_engine_public *enpub)
         if (0 != setup_nonce_prk(crypter->nonce_prk_buf,
                                         &crypter->nonce_prk_sz, i, now))
             goto err;
-        if (1 != EVP_AEAD_CTX_init(&crypter->ctx, EVP_aead_aes_128_gcm(),
-            shm_state.tgss_crypter_key[i],
-            sizeof(shm_state.tgss_crypter_key[i]), RETRY_TAG_LEN, 0))
+        crypter->ctx = lsquic_aead_ctx_alloc(EVP_aead_aes_128_gcm(),
+                                             shm_state.tgss_crypter_key[i],
+                                             sizeof(shm_state.tgss_crypter_key[i]),
+                                             RETRY_TAG_LEN, 2);
+        if (crypter->ctx == NULL)
             goto err;
     }
 
@@ -316,7 +318,8 @@ lsquic_tg_destroy (struct token_generator *tokgen)
                                     / sizeof(tokgen->tg_crypters[0]); ++i)
     {
         crypter = tokgen->tg_crypters + i;
-        EVP_AEAD_CTX_cleanup(&crypter->ctx);
+        lsquic_aead_ctx_free(crypter->ctx);
+        crypter->ctx = NULL;
     }
     free(tokgen);
     LSQ_DEBUG("destroyed");
@@ -527,7 +530,7 @@ lsquic_tg_validate_token (struct token_generator *tokgen,
     encr_token = nonce + RETRY_NONCE_LEN;
     encr_token_len = packet_in->pi_token_size - RETRY_NONCE_LEN;
     decr_token_len = sizeof(decr_token);
-    if (!lsquic_aead_open(&crypter->ctx, decr_token, &decr_token_len,
+    if (!lsquic_aead_open(crypter->ctx, decr_token, &decr_token_len,
                           decr_token_len, nonce, RETRY_NONCE_LEN,
                           encr_token, encr_token_len, ad, ad_len))
     {
@@ -761,7 +764,7 @@ tokgen_generate_token (struct token_generator *tokgen,
     in_len = p - buf - RETRY_NONCE_LEN;
     if (LSQ_LOG_ENABLED(LSQ_LOG_DEBUG))
         lsquic_hexstr(in, in_len, in_str, sizeof(in_str));
-    if (lsquic_aead_seal(&crypter->ctx, in, &len, len,
+    if (lsquic_aead_seal(crypter->ctx, in, &len, len,
                          buf, RETRY_NONCE_LEN, in, in_len, ad_buf, ad_len))
     {
         ++crypter->nonce_counter;

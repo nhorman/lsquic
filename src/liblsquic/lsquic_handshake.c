@@ -3057,7 +3057,7 @@ decrypt_packet (struct lsquic_enc_session *enc_session, uint8_t path_id,
     /* Comment: 12 = sizeof(dec_key_iv] 4 + sizeof(pack_num) 8 */
     uint8_t nonce[12];
     uint64_t path_id_packet_number;
-    EVP_AEAD_CTX *key = NULL;
+    void *key = NULL;
     int try_times = 0;
     enum enc_level enc_level;
 
@@ -3224,7 +3224,7 @@ gquic_encrypt_buf (struct lsquic_enc_session *enc_session,
     /* Comment: 12 = sizeof(dec_key_iv] 4 + sizeof(pack_num) 8 */
     uint8_t nonce[12];
     uint64_t path_id_packet_number;
-    EVP_AEAD_CTX *key;
+    void *key;
 
     if (enc_session)
         LSQ_DEBUG("%s: hsk_state: %d", __func__, enc_session->hsk_state);

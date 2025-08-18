@@ -402,7 +402,7 @@ err:
 
 /* AEAD nonce is always zero */
 /* return 0 for OK */
-int lsquic_aes_aead_enc(EVP_AEAD_CTX *key,
+int lsquic_aes_aead_enc(void *key,
               const uint8_t *ad, size_t ad_len,
               const uint8_t *nonce, size_t nonce_len, 
               const uint8_t *plain, size_t plain_len,
@@ -434,7 +434,7 @@ int lsquic_aes_aead_enc(EVP_AEAD_CTX *key,
 
 
 /* return 0 for OK */
-int lsquic_aes_aead_dec(EVP_AEAD_CTX *key,
+int lsquic_aes_aead_dec(void *key,
               const uint8_t *ad, size_t ad_len,
               const uint8_t *nonce, size_t nonce_len, 
               const uint8_t *cypher, size_t cypher_len,

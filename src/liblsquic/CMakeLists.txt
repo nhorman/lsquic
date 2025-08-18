@@ -86,6 +86,8 @@ SET(lsquic_STAT_SRCS
 
 IF("${QUIC_TLS_LIB}" STREQUAL "BORINGSSL")
 LIST(APPEND lsquic_STAT_SRCS lsquic_crypto_boringssl.c)
+ELSE()
+LIST(APPEND lsquic_STAT_SRCS lsquic_crypto_openssl.c)
 ENDIF()
 
 IF(NOT MSVC)

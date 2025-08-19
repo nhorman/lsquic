@@ -267,7 +267,7 @@ struct lsquic_enc_session
 #define dec_ctx_i es_aead_ctxs[GEL_EARLY][1]
 #define enc_ctx_f es_aead_ctxs[GEL_FORW][0]
 #define dec_ctx_f es_aead_ctxs[GEL_FORW][1]
-    void          *es_aead_ctxs[N_GELS][2];
+    LSQ_AEAD_CTX   *es_aead_ctxs[N_GELS][2];
 
 #define enc_key_nonce_i es_ivs[GEL_EARLY][0]
 #define dec_key_nonce_i es_ivs[GEL_EARLY][1]
@@ -686,7 +686,11 @@ gquic2_init_crypto_ctx (struct lsquic_enc_session *enc_session,
                 unsigned idx, const unsigned char *secret, size_t secret_sz)
 {
     const EVP_MD *const md = EVP_sha256();
-    const EVP_AEAD *const aead = EVP_aead_aes_128_gcm();
+#ifdef HAVE_BORINGSSL
+    const void *const aead = EVP_aead_aes_128_gcm();
+#else
+    const void *const aead = EVP_aes_128_gcm();
+#endif
     unsigned char key[aes128_key_len];
     char hexbuf[sizeof(key) * 2 + 1];
 
@@ -1806,6 +1810,11 @@ get_valid_scfg (const struct lsquic_enc_session *enc_session,
     int ret;
     unsigned msg_len, server_config_sz;
     struct message_writer mw;
+#ifdef HAVE_BORINGSSL
+    LSQ_AEAD *aead = EVP_aead_aes_128_gcm();
+#else
+    LSQ_AEAD *aead = EVP_aes_128_gcm();
+#endif
 
     if (enpub->enp_server_config->lsc_scfg && (enpub->enp_server_config->lsc_scfg->info.expy > (uint64_t)t))
         return enpub->enp_server_config;
@@ -1823,7 +1832,7 @@ get_valid_scfg (const struct lsquic_enc_session *enc_session,
              * the struct is ready but AEAD_CTX is not ready.
              **/
             enpub->enp_server_config->lsc_stk_ctx =
-                lsquic_aead_ctx_alloc(EVP_aead_aes_128_gcm(),
+                lsquic_aead_ctx_alloc(aead,
                                       enpub->enp_server_config->lsc_scfg->info.skt_key,
                                       16, 12, 2);
             if (enpub->enp_server_config->lsc_stk_ctx == NULL)
@@ -1899,7 +1908,7 @@ get_valid_scfg (const struct lsquic_enc_session *enc_session,
 
     lsquic_aead_ctx_free(enpub->enp_server_config->lsc_stk_ctx);
     enpub->enp_server_config->lsc_stk_ctx =
-        lsquic_aead_ctx_alloc(EVP_aead_aes_128_gcm(),
+        lsquic_aead_ctx_alloc(aead,
                               enpub->enp_server_config->lsc_scfg->info.skt_key,
                               sizeof(enpub->enp_server_config->lsc_scfg->info.skt_key),
                               12, 2);
@@ -2452,10 +2461,14 @@ static int handle_chlo_reply_verify_prof(struct lsquic_enc_session *enc_session,
 
 static void
 setup_aead_ctx (const struct lsquic_enc_session *enc_session,
-                void **ctx, unsigned char key[], int key_len,
+                LSQ_AEAD_CTX **ctx, unsigned char key[], int key_len,
                 unsigned char *key_copy)
 {
-    const EVP_AEAD *aead_ = EVP_aead_aes_128_gcm();
+#ifdef HAVE_BORINGSSL
+    const LSQ_AEAD *aead_ = EVP_aead_aes_128_gcm();
+#else
+    const LSQ_AEAD *aead_ = EVP_aes_128_gcm();
+#endif
     const int auth_tag_size = enc_session->es_flags & ES_GQUIC2
                                     ? IQUIC_TAG_LEN : GQUIC_PACKET_HASH_SZ;
     if (*ctx)

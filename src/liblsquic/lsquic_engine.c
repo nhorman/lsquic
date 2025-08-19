@@ -85,10 +85,10 @@
 #include "lsquic_attq.h"
 #include "lsquic_min_heap.h"
 #include "lsquic_http1x_if.h"
+#include "lsquic_crypto.h"
 #include "lsquic_handshake.h"
 #include "lsquic_crand.h"
 #include "lsquic_ietf.h"
-#include "lsquic_crypto.h"
 
 #define LSQUIC_LOGGER_MODULE LSQLM_ENGINE
 #include "lsquic_logger.h"
@@ -286,7 +286,7 @@ struct lsquic_engine
     int                                last_tick_diff;
 #endif
     struct crand                       crand;
-    void                               *retry_aead_ctx[N_IETF_RETRY_VERSIONS];
+    LSQ_AEAD_CTX                       *retry_aead_ctx[N_IETF_RETRY_VERSIONS];
 #if LSQUIC_CONN_STATS
     struct {
         uint16_t            immed_ticks;    /* bitmask */
@@ -573,6 +573,11 @@ lsquic_engine_new (unsigned flags,
     unsigned i;
     char err_buf[100];
     uint64_t seed;
+#ifdef HAVE_BORINGSSL
+    LSQ_AEAD *aead = EVP_aead_aes_128_gcm();
+#else
+    LSQ_AEAD *aead = EVP_aes_128_gcm();
+#endif
 
     if (!api->ea_packets_out)
     {
@@ -836,7 +841,7 @@ lsquic_engine_new (unsigned flags,
     engine->stats_fh = api->ea_stats_fh;
 #endif
     for (i = 0; i < N_IETF_RETRY_VERSIONS; ++i) {
-        engine->retry_aead_ctx[i] = lsquic_aead_ctx_alloc(EVP_aead_aes_128_gcm(),
+        engine->retry_aead_ctx[i] = lsquic_aead_ctx_alloc(aead,
                                                           (uint8_t *)lsquic_retry_key_buf[i],
                                                           IETF_RETRY_KEY_SZ, 16, 2);
         if (engine->retry_aead_ctx[i] == NULL)

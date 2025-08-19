@@ -75,7 +75,7 @@ static const uint8_t srst_salt[8] = "\x28\x6e\x81\x02\x40\x5b\x2c\x2b";
 
 struct crypter
 {
-    void            *ctx;
+    LSQ_AEAD_CTX    *ctx;
     unsigned long   nonce_counter;
     size_t          nonce_prk_sz;
     uint8_t         nonce_prk_buf[EVP_MAX_MD_SIZE];
@@ -251,7 +251,11 @@ lsquic_tg_new (struct lsquic_engine_public *enpub)
     struct token_generator *tokgen;
     time_t now;
     struct tokgen_shm_state shm_state;
-
+#ifdef HAVE_BORINGSSL
+    LSQ_AEAD *aead = EVP_aead_aes_128_gcm();
+#else
+    LSQ_AEAD *aead = EVP_aes_128_gcm();
+#endif
     tokgen = calloc(1, sizeof(*tokgen));
     if (!tokgen)
         goto err;
@@ -270,7 +274,7 @@ lsquic_tg_new (struct lsquic_engine_public *enpub)
         if (0 != setup_nonce_prk(crypter->nonce_prk_buf,
                                         &crypter->nonce_prk_sz, i, now))
             goto err;
-        crypter->ctx = lsquic_aead_ctx_alloc(EVP_aead_aes_128_gcm(),
+        crypter->ctx = lsquic_aead_ctx_alloc(aead,
                                              shm_state.tgss_crypter_key[i],
                                              sizeof(shm_state.tgss_crypter_key[i]),
                                              RETRY_TAG_LEN, 2);

@@ -10,8 +10,12 @@
 #include <string.h>
 #include <sys/queue.h>
 
+#ifdef HAVE_BORINGSSL
 #include <openssl/chacha.h>
 #include <openssl/hkdf.h>
+#else
+#include <openssl/evp.h>
+#endif
 #include <openssl/rand.h>
 #include <openssl/ssl.h>
 
@@ -138,7 +142,7 @@ struct crypto_ctx
     enum {
         YK_INITED = 1 << 0,
     }                   yk_flags;
-    void                *yk_aead_ctx;
+    LSQ_AEAD_CTX        *yk_aead_ctx;
     unsigned            yk_key_sz;
     unsigned            yk_iv_sz;
     unsigned char       yk_key_buf[EVP_MAX_KEY_LENGTH];
@@ -180,7 +184,7 @@ static struct label_set hkdf_labels[2] =
 /* [draft-ietf-quic-tls-12] Section 5.3.6 */
 static int
 init_crypto_ctx (struct crypto_ctx *crypto_ctx, const EVP_MD *md,
-                 const EVP_AEAD *aead, const unsigned char *secret,
+                 const LSQ_AEAD *aead, const unsigned char *secret,
                  size_t secret_sz, unsigned dir,
                  struct label_set *key_iv)
 {
@@ -197,7 +201,7 @@ init_crypto_ctx (struct crypto_ctx *crypto_ctx, const EVP_MD *md,
         crypto_ctx->yk_key_buf, crypto_ctx->yk_key_sz);
     lsquic_qhkdf_expand(md, secret, secret_sz, key_iv->iv, key_iv->iv_len,
         crypto_ctx->yk_iv_buf, crypto_ctx->yk_iv_sz);
-    crypto_ctx->yk_aead_ctx = lsquic_aead_ctx_alloc((void *)aead, crypto_ctx->yk_key_buf,
+    crypto_ctx->yk_aead_ctx = lsquic_aead_ctx_alloc(aead, crypto_ctx->yk_key_buf,
                                                     crypto_ctx->yk_key_sz,
                                                     IQUIC_TAG_LEN, dir);
     if (crypto_ctx->yk_aead_ctx == NULL)
@@ -278,7 +282,7 @@ struct enc_sess_iquic
     const unsigned char *esi_alpn;
     /* Need MD and AEAD for key rotation */
     const EVP_MD        *esi_md;
-    const EVP_AEAD      *esi_aead;
+    const void          *esi_aead;
     struct {
         const char *cipher_name;
         int         alg_bits;
@@ -1147,7 +1151,11 @@ static int
 setup_handshake_keys (struct enc_sess_iquic *enc_sess, const lsquic_cid_t *cid)
 {
     const EVP_MD *const md = EVP_sha256();
-    const EVP_AEAD *const aead = EVP_aead_aes_128_gcm();
+#ifdef HAVE_BORINGSSL
+    const void *const aead = EVP_aead_aes_128_gcm();
+#else
+    const void *const aead = EVP_aes_128_gcm();
+#endif
     /* [draft-ietf-quic-tls-12] Section 5.6.1: AEAD_AES_128_GCM implies
      * 128-bit AES-CTR.
      */
@@ -1604,7 +1612,7 @@ iquic_new_session_cb (SSL *ssl, SSL_SESSION *session)
 
 struct crypto_params
 {
-    const EVP_AEAD      *aead;
+    const LSQ_AEAD      *aead;
     const EVP_MD        *md;
     const EVP_CIPHER    *hp;
     gen_hp_mask_f        gen_hp_mask;
@@ -1627,19 +1635,31 @@ get_crypto_params (const struct enc_sess_iquic *enc_sess,
     {
     case 0x03000000 | 0x1301:       /* TLS_AES_128_GCM_SHA256 */
         params->md          = EVP_sha256();
+#ifdef HAVE_BORINGSSL
         params->aead        = EVP_aead_aes_128_gcm();
+#else
+        params->aead        = EVP_aes_128_gcm();
+#endif
         params->hp          = EVP_aes_128_ecb();
         params->gen_hp_mask = gen_hp_mask_aes;
         break;
     case 0x03000000 | 0x1302:       /* TLS_AES_256_GCM_SHA384 */
         params->md          = EVP_sha384();
+#ifdef HAVE_BORINGSSL
         params->aead        = EVP_aead_aes_256_gcm();
+#else
+        params->aead        = EVP_aes_256_gcm();
+#endif
         params->hp          = EVP_aes_256_ecb();
         params->gen_hp_mask = gen_hp_mask_aes;
         break;
     case 0x03000000 | 0x1303:       /* TLS_CHACHA20_POLY1305_SHA256 */
         params->md          = EVP_sha256();
+#ifdef HAVE_BORINGSSL
         params->aead        = EVP_aead_chacha20_poly1305();
+#else
+        params->aead        = EVP_chacha20_poly1305();
+#endif
         params->hp          = NULL;
         params->gen_hp_mask = gen_hp_mask_chacha20;
         break;

@@ -2,6 +2,8 @@
 #ifndef LSQUIC_HANDSHAKE_H
 #define LSQUIC_HANDSHAKE_H 1
 
+#include "lsquic_crypto_backend.h"
+
 #define aes128_key_len 16
 #define aes128_iv_len 4
 #define STK_LENGTH   60
@@ -78,7 +80,7 @@ typedef struct SCFG_st SCFG_t;
 typedef struct lsquic_server_config
 {
     SCFG_t         *lsc_scfg;   /* This part is stored in SHM */
-    void           *lsc_stk_ctx;
+    LSQ_AEAD_CTX   *lsc_stk_ctx;
 } lsquic_server_config_t;
 
 /* Based on enum HandshakeFailureReason in Chromium */

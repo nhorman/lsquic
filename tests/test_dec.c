@@ -24,13 +24,18 @@
 int
 main (int argc, char **argv)
 {
-    void *aead_ctx;
+    LSQ_AEAD_CTX *aead_ctx;
     int opt, n = 1, r;
     size_t sealed_len, opened_len;
     unsigned char key[16];
     unsigned char data[1328];
     unsigned char sealed_buf[63 + MAX_SIZE], *sealed = sealed_buf;
     unsigned char opened_buf[63 + MAX_SIZE], *opened = opened_buf;
+#ifdef HAVE_BORINGSSL
+    LSQ_AEAD *aead = EVP_aead_aes_128_gcm();
+#else
+    LSQ_AEAD *aead = EVP_aes_128_gcm();
+#endif
 
     while (-1 != (opt = getopt(argc, argv, "an:")))
     {
@@ -53,7 +58,7 @@ main (int argc, char **argv)
     RAND_bytes(key, sizeof(key));
     RAND_bytes(data, sizeof(data));
 
-    aead_ctx = lsquic_aead_ctx_alloc(EVP_aead_aes_128_gcm(), key, sizeof(key),
+    aead_ctx = lsquic_aead_ctx_alloc(aead, key, sizeof(key),
                                      12, 2);
     if (aead_ctx == NULL) {
         fprintf(stderr, "cannot alloc ctx\n");

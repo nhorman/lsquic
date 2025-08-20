@@ -14,7 +14,9 @@
 #include <string.h>
 #include <sys/queue.h>
 
+#ifdef HAVE_BORINGSSL
 #include <openssl/aead.h>
+#endif
 #include <openssl/rand.h>
 
 #include "fiu-local.h"

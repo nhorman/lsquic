@@ -1,6 +1,7 @@
 /* Copyright (c) 2025 LiteSpeed Technologies Inc.  See LICENSE. */
 #ifndef __LSQUIC_CRYPTO_BACKEND_H__
 #define __LSQUIC_CRYPTO_BACKEND_H__
+#include <openssl/err.h>
 
 typedef void LSQ_AEAD_CTX;
 typedef void LSQ_AEAD;
@@ -28,4 +29,9 @@ int lsquic_hkdf_extract(uint8_t *out_key, size_t *out_len,
                         const EVP_MD *digest, const uint8_t *secret,
                         size_t secret_len, const uint8_t *salt,
                         size_t salt_len);
+
+#ifndef ERR_ERROR_STRING_BUF_LEN
+#define ERR_ERROR_STRING_BUF_LEN 120
+#endif
+
 #endif

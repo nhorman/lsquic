@@ -42,7 +42,9 @@
 #include <zlib.h>
 #endif
 
+#ifdef HAVE_BORINGSSL
 #include <openssl/aead.h>
+#endif
 #include <openssl/rand.h>
 
 #include "lsquic.h"

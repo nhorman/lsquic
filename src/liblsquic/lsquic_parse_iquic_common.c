@@ -11,7 +11,6 @@
 #include <sys/types.h>
 
 #include <openssl/rand.h>
-#include <openssl/aead.h>
 
 #include "lsquic_types.h"
 #include "lsquic_int_types.h"

@@ -15,8 +15,6 @@
 #include <Ws2tcpip.h>
 #endif
 
-#include <openssl/aead.h>
-#include <openssl/hkdf.h>
 #include <openssl/rand.h>
 #include <openssl/ssl.h>
 

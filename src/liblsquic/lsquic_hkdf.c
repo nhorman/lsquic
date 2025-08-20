@@ -3,8 +3,6 @@
 #include <stddef.h>
 #include <string.h>
 
-#include <openssl/hkdf.h>
-
 #include "lsquic_hkdf.h"
 #include "lsquic_crypto.h"
 

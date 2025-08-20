@@ -1,6 +1,7 @@
 /* Copyright (c) 2017 - 2022 LiteSpeed Technologies Inc.  See LICENSE. */
 #ifndef LSQUIC_HKDF_H
 #define LSQUIC_HKDF_H 1
+#include <openssl/evp.h>
 
 /* [draft-ietf-quic-tls-23] Section 5.2 */
 #define HSK_SALT_BUF "\xc3\xee\xf7\x12\xc7\x2e\xbb\x5a\x11\xa7" \
@@ -26,7 +27,7 @@
 #define SERVER_LABEL_SZ (sizeof(SERVER_LABEL) - 1)
 
 void
-lsquic_qhkdf_expand (const struct env_md_st *, const unsigned char *secret,
+lsquic_qhkdf_expand (const EVP_MD *, const unsigned char *secret,
             unsigned secret_len, const char *label, uint8_t label_len,
             unsigned char *out, uint16_t out_len);
 

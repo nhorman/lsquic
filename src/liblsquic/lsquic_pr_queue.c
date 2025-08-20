@@ -15,7 +15,6 @@
 #include <sys/socket.h>
 #endif
 
-#include <openssl/aead.h>
 #include <openssl/rand.h>
 
 #include "lsquic.h"

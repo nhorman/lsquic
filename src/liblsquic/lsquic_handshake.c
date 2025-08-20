@@ -20,9 +20,12 @@
 #include <openssl/stack.h>
 #include <openssl/x509.h>
 #include <openssl/rand.h>
+#include <openssl/err.h>
+#ifdef HAVE_BORINGSSL
 #include <openssl/nid.h>
 #include <openssl/bn.h>
 #include <openssl/hkdf.h>
+#endif
 #include <zlib.h>
 
 #include "lsquic.h"
@@ -3898,12 +3901,13 @@ gquic2_gen_hp_mask (struct lsquic_enc_session *enc_session,
         const unsigned char *sample, unsigned char mask[EVP_MAX_BLOCK_LENGTH])
 {
     const EVP_CIPHER *const cipher = EVP_aes_128_ecb();
-    EVP_CIPHER_CTX hp_ctx;
+    EVP_CIPHER_CTX *hp_ctx;
     int out_len;
 
-    EVP_CIPHER_CTX_init(&hp_ctx);
-    if (EVP_EncryptInit_ex(&hp_ctx, cipher, NULL, hp, 0)
-        && EVP_EncryptUpdate(&hp_ctx, mask, &out_len, sample, 16))
+    hp_ctx = EVP_CIPHER_CTX_new();
+    assert(hp_ctx != NULL);
+    if (EVP_EncryptInit_ex(hp_ctx, cipher, NULL, hp, 0)
+        && EVP_EncryptUpdate(hp_ctx, mask, &out_len, sample, 16))
     {
         assert(out_len >= 5);
     }
@@ -3915,7 +3919,7 @@ gquic2_gen_hp_mask (struct lsquic_enc_session *enc_session,
             "cannot generate hp mask, error code: %"PRIu32, ERR_get_error());
     }
 
-    (void) EVP_CIPHER_CTX_cleanup(&hp_ctx);
+    EVP_CIPHER_CTX_free(hp_ctx);
 
     if (0)
     {

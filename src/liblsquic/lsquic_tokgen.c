@@ -122,9 +122,9 @@ setup_nonce_prk (unsigned char *nonce_prk_buf, size_t *nonce_prk_sz,
     ikm.now = now;
     ikm.tt  = i;
     RAND_bytes(ikm.buf, sizeof(ikm.buf));
-    if (HKDF_extract(nonce_prk_buf, nonce_prk_sz,
-                     EVP_sha256(), (uint8_t *) &ikm, sizeof(ikm),
-                     (void *) &salts[i], sizeof(salts[i])))
+    if (lsquic_hkdf_extract(nonce_prk_buf, nonce_prk_sz,
+                            EVP_sha256(), (uint8_t *) &ikm, sizeof(ikm),
+                            (void *) &salts[i], sizeof(salts[i])))
         return 0;
     else
     {
@@ -211,7 +211,7 @@ get_or_generate_state (struct lsquic_engine_public *enpub, time_t now,
         srst_ikm.now = now;
         RAND_bytes(srst_ikm.buf, sizeof(srst_ikm.buf));
     }
-    if (!HKDF_extract(shm_state->tgss_srst_prk, &bufsz,
+    if (!lsquic_hkdf_extract(shm_state->tgss_srst_prk, &bufsz,
                      EVP_sha256(), (uint8_t *) &srst_ikm, sizeof(srst_ikm),
                      srst_salt, sizeof(srst_salt)))
     {
@@ -726,8 +726,9 @@ tokgen_generate_token (struct token_generator *tokgen,
     memcpy(label, labels[token_type], LABEL_PREFIX_SZ);
     memcpy(label + LABEL_PREFIX_SZ, &crypter->nonce_counter,
                                         sizeof(crypter->nonce_counter));
-    (void) HKDF_expand(p + 1, RETRY_NONCE_LEN - 1, EVP_sha256(),
-        crypter->nonce_prk_buf, crypter->nonce_prk_sz, label, sizeof(label));
+    (void) lsquic_hkdf_expand(p + 1, RETRY_NONCE_LEN - 1, EVP_sha256(),
+                              crypter->nonce_prk_buf, crypter->nonce_prk_sz,
+                              label, sizeof(label));
     p += RETRY_NONCE_LEN;
     *p++ = TOKGEN_VERSION;
     now = time(NULL);
@@ -823,8 +824,9 @@ lsquic_tg_generate_sreset (struct token_generator *tokgen,
 {
     char str[IQUIC_SRESET_TOKEN_SZ * 2 + 1];
 
-    (void) HKDF_expand(reset_token, IQUIC_SRESET_TOKEN_SZ, EVP_sha256(),
-        tokgen->tg_srst_prk_buf, tokgen->tg_srst_prk_sz, cid->idbuf, cid->len);
+    (void) lsquic_hkdf_expand(reset_token, IQUIC_SRESET_TOKEN_SZ, EVP_sha256(),
+                              tokgen->tg_srst_prk_buf, tokgen->tg_srst_prk_sz,
+                              cid->idbuf, cid->len);
     LSQ_DEBUGC("generated stateless reset token %s for CID %"CID_FMT,
         HEXSTR(reset_token, IQUIC_SRESET_TOKEN_SZ, str), CID_BITS(cid));
 }

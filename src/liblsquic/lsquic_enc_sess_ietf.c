@@ -1185,8 +1185,8 @@ setup_handshake_keys (struct enc_sess_iquic *enc_sess, const lsquic_cid_t *cid)
     hp = &enc_sess->esi_hsk_crypto[ENC_LEV_INIT].hp;
 
     salt = lsquic_ver2salt[enc_sess->esi_conn->cn_version];
-    HKDF_extract(hsk_secret, &hsk_secret_sz, md, cid->idbuf, cid->len,
-                    salt, HSK_SALT_SZ);
+    lsquic_hkdf_extract(hsk_secret, &hsk_secret_sz, md, cid->idbuf, cid->len,
+                        salt, HSK_SALT_SZ);
     if (enc_sess->esi_flags & ESI_LOG_SECRETS)
     {
         LSQ_DEBUG("handshake salt: %s", HEXSTR(salt, HSK_SALT_SZ, hexbuf));

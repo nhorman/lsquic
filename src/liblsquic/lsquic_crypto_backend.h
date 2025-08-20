@@ -18,4 +18,14 @@ int lsquic_aead_open(LSQ_AEAD_CTX *ctx, uint8_t *out, size_t *out_len,
                      size_t max_out_len, const uint8_t *nonce,
                      size_t nonce_len, const uint8_t *in, size_t in_len,
                      const uint8_t *ad, size_t ad_len);
+
+int lsquic_hkdf_expand(uint8_t *out_key, size_t out_len,
+                       const EVP_MD *digest, const uint8_t *prk,
+                       size_t prk_len, const uint8_t *info,
+                       size_t info_len);
+
+int lsquic_hkdf_extract(uint8_t *out_key, size_t *out_len,
+                        const EVP_MD *digest, const uint8_t *secret,
+                        size_t secret_len, const uint8_t *salt,
+                        size_t salt_len);
 #endif

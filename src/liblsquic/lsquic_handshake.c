@@ -744,8 +744,8 @@ gquic2_setup_handshake_keys (struct lsquic_enc_session *enc_session)
     unsigned char hsk_secret[EVP_MAX_MD_SIZE];
     unsigned char secret[SHA256_DIGEST_LENGTH];
 
-    if (!HKDF_extract(hsk_secret, &hsk_secret_sz, md, cid_buf, cid_buf_sz,
-                                                salt_Q050, sizeof(salt_Q050)))
+    if (!lsquic_hkdf_extract(hsk_secret, &hsk_secret_sz, md, cid_buf, cid_buf_sz,
+                             salt_Q050, sizeof(salt_Q050)))
     {
         LSQ_WARN("HKDF extract failed");
         return -1;

@@ -32,8 +32,8 @@ main (void)
         0xb4, 0x5a, 0xba, 0x4b, 0xc0, 0x37, 0xf3, 0xb2,
     };
 
-    HKDF_extract(secret, &secret_len, md, dcid.idbuf, dcid.len,
-                                                HSK_SALT_PRE29, HSK_SALT_SZ);
+    lsquic_hkdf_extract(secret, &secret_len, md, dcid.idbuf, dcid.len,
+                        HSK_SALT_PRE29, HSK_SALT_SZ);
 
     assert(sizeof(expected_secret) == secret_len);
     assert(0 == memcmp(secret, expected_secret, sizeof(expected_secret)));

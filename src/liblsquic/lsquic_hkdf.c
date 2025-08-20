@@ -6,7 +6,7 @@
 #include <openssl/hkdf.h>
 
 #include "lsquic_hkdf.h"
-
+#include "lsquic_crypto.h"
 
 /* [draft-ietf-quic-tls-17] Section 5 */
 void
@@ -40,6 +40,6 @@ lsquic_qhkdf_expand (const EVP_MD *md, const unsigned char *secret,
 #else
     (void)
 #endif
-    HKDF_expand(out, out_len, md, secret, secret_len, info, len);
+    lsquic_hkdf_expand(out, out_len, md, secret, secret_len, info, len);
     assert(s);
 }

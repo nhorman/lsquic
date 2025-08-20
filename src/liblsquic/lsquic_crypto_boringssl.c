@@ -10,6 +10,7 @@
 #include <openssl/evp.h>
 #include <openssl/kdf.h>
 #include <openssl/hmac.h>
+#include <openssl/hkdf.h>
 
 #include "lsquic_types.h"
 #include "lsquic_crypto.h"
@@ -71,4 +72,19 @@ int lsquic_aead_open(LSQ_AEAD_CTX *ctx, uint8_t *out, size_t *out_len,
                              nonce_len, in, in_len, ad, ad_len);
 }
 
+int lsquic_hkdf_expand(uint8_t *out_key, size_t out_len,
+                       const EVP_MD *digest, const uint8_t *prk,
+                       size_t prk_len, const uint8_t *info,
+                       size_t info_len)
+{
+    return HKDF_expand(out_key, out_len, digest, prk, prk_len, info, info_len);
+}
+
+int lsquic_hkdf_extract(uint8_t *out_key, size_t *out_len,
+                        const EVP_MD *digest, const uint8_t *secret,
+                        size_t secret_len, const uint8_t *salt,
+                        size_t salt_len)
+{
+    return HKDF_extract(out_key, out_len, digest, secret, secret_len, salt, salt_len);
+}
 

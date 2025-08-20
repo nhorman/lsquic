@@ -10,12 +10,8 @@
 #include <string.h>
 #include <sys/queue.h>
 
-#ifdef HAVE_BORINGSSL
 #include <openssl/chacha.h>
 #include <openssl/hkdf.h>
-#else
-#include <openssl/evp.h>
-#endif
 #include <openssl/rand.h>
 #include <openssl/ssl.h>
 

@@ -55,6 +55,10 @@ static int enc_to_prot_map[] = {
     [ENC_LEV_APP] = OSSL_RECORD_PROTECTION_LEVEL_APPLICATION
 };
 
+static int
+set_secret (SSL *ssl, int prot_level,
+    const uint8_t *secret, size_t secret_len, int rw);
+
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 
 #define LSQUIC_LOGGER_MODULE LSQLM_HANDSHAKE
@@ -261,6 +265,16 @@ static int add_record(struct record_entry **head, const uint8_t *data,
     return 1;
 }
 
+static struct record_entry *get_next_record(struct record_entry *head)
+{
+    while (head != NULL) {
+        if (head->release == 0)
+            return head;
+        head = head->next;
+    }
+    return NULL;
+}
+
 struct enc_sess_iquic
 {
     struct lsquic_engine_public
@@ -341,6 +355,8 @@ struct enc_sess_iquic
     unsigned char        esi_grease;
     signed char          esi_have_forw;
     struct record_entry *rec_head;
+    unsigned char *transport_buf;
+    size_t transport_buf_sz;
 };
 
 
@@ -878,36 +894,116 @@ init_frals (struct enc_sess_iquic *enc_sess)
         lsquic_frab_list_init(fral, 0x100, NULL, NULL, NULL);
 }
 
-static int quic_tls_send(SSL *s, const unsigned char *buf, size_t buf_len,
+static int quic_tls_send(SSL *s, const unsigned char *data, size_t len,
                          size_t *consumed, void *arg)
 {
+    struct enc_sess_iquic *enc_sess;
+    int level = enc_sess->esi_last_w;
+    void *stream;
+    ssize_t nw;
+
+    enc_sess = SSL_get_ex_data(s, s_idx);
+    if (!enc_sess)
+        return 0;
+
+    stream = enc_sess->esi_streams[level];
+    if (!stream)
+        return 0;
+
+    /* The frab list logic is only applicable on the client.  XXX This is
+     * likely to change when support for key updates is added.
+     */
+    if (enc_sess->esi_flags & (ESI_ON_WRITE|ESI_SERVER))
+        nw = enc_sess->esi_cryst_if->csi_write(stream, data, len);
+    else
+    {
+        LSQ_DEBUG("not in on_write event: buffer in a frab list");
+        if (0 == lsquic_frab_list_write(&enc_sess->esi_frals[level], data, len))
+        {
+            if (!lsquic_frab_list_empty(&enc_sess->esi_frals[level]))
+                enc_sess->esi_cryst_if->csi_wantwrite(stream, 1);
+            nw = len;
+        }
+        else
+            nw = -1;
+    }
+
+    if (nw >= 0 && (size_t) nw == len)
+    {
+        enc_sess->esi_last_w = (enum enc_level) level;
+        LSQ_DEBUG("wrote %zu bytes to stream at encryption level %u",
+            len, level);
+        maybe_drop_SSL(enc_sess);
+        *consumed = len;
+        return 1;
+    }
+    else
+    {
+        LSQ_INFO("could not write %zu bytes: returned %zd", len, nw);
+        return 0;
+    }
     return 0;
 }
 
 static int quic_tls_recv(SSL *s, const unsigned char **buf, size_t *bytes_read, void *arg)
 {
+    struct enc_sess_iquic *enc_sess = SSL_get_ex_data(s, s_idx);
+    struct record_entry *rec = get_next_record(enc_sess->rec_head);
+
+    if (rec) {
+        *buf = rec->rec_data;
+        *bytes_read = rec->rec_len;
+        rec->release = 1;
+        return 1;
+    }
     return 0;
 }
 
 static int quic_tls_release_rec(SSL *s, size_t bytes_read, void *arg)
 {
+    struct enc_sess_iquic *enc_sess = SSL_get_ex_data(s, s_idx);
+    struct record_entry *rec = enc_sess->rec_head;
+   
+    if (enc_sess->rec_head != NULL && enc_sess->rec_head->release == 1) {
+        enc_sess->rec_head = enc_sess->rec_head->next;
+        free(rec);
+        return 1;
+    }
     return 0;
 }
 
 static int quic_tls_yield_secret(SSL *s, uint32_t prot_level, int direction,
                                  const unsigned char *secret, size_t secret_len, void *arg)
 {
-    return 0;
+    return set_secret(s, prot_level, secret, secret_len, direction);
 }
 
 static int quic_tls_got_tp(SSL *s, const unsigned char *params, size_t params_len, void *arg)
 {
-    return 0;
+    struct enc_sess_iquic *enc_sess = SSL_get_ex_data(s, s_idx);
+
+    enc_sess->transport_buf = malloc(params_len);
+
+    if (enc_sess->transport_buf == NULL)
+        return 0;
+
+    memcpy(enc_sess->transport_buf, params, params_len);
+    enc_sess->transport_buf_sz = params_len;
+    return 1;
 }
 
 static int quic_tls_alert(SSL *s, unsigned char *alert_code, void *arg)
 {
-    return 0;
+    struct enc_sess_iquic *enc_sess;
+
+    enc_sess = SSL_get_ex_data(s, s_idx);
+    if (!enc_sess)
+        return 0;
+
+    LSQ_INFO("got alert %"PRIu8, *alert_code);
+    enc_sess->esi_conn->cn_if->ci_tls_alert(enc_sess->esi_conn, *alert_code);
+
+    return 1;
 }
 
 static OSSL_DISPATCH cry_quic_dispatch[] = {
@@ -936,6 +1032,7 @@ iquic_esfi_create_client (const char *hostname,
     const struct alpn_map *am;
     int transpa_len;
     char errbuf[ERR_ERROR_STRING_BUF_LEN];
+    BIO *ossl_bio;
     unsigned char trans_params[0x80
 #if LSQUIC_TEST_QUANTUM_READINESS
         + 4 + lsquic_tp_get_quantum_sz()
@@ -1040,6 +1137,15 @@ iquic_esfi_create_client (const char *hostname,
             ERR_error_string(ERR_get_error(), errbuf));
         goto err;
     }
+    ossl_bio = BIO_new(BIO_s_null());
+    if (ossl_bio == NULL) {
+        LSQ_ERROR("Cannot create BIO for SSL");
+        goto err;
+    }
+
+    SSL_set_bio(enc_sess->esi_ssl, ossl_bio, ossl_bio);
+    ossl_bio = NULL;
+
 #if BORINGSSL_API_VERSION >= 13
     SSL_set_quic_use_legacy_codepoint(enc_sess->esi_ssl,
                             enc_sess->esi_ver_neg->vn_ver < LSQVER_I001);
@@ -1109,6 +1215,8 @@ iquic_esfi_create_client (const char *hostname,
     return enc_sess;
 
   err:
+    if (ossl_bio)
+        BIO_free(ossl_bio);
     if (enc_sess)
         iquic_esfi_destroy(enc_sess);
     if (!set_app_ctx && ssl_ctx)
@@ -1623,10 +1731,9 @@ iquic_ssl_sess_to_resume_info (struct enc_sess_iquic *enc_sess, SSL *ssl,
     const uint8_t *trapa_buf = NULL;
     size_t trapa_sz = 0, buf_sz;
 
-#if 0
-    /*NH Figure out how to implement this */
-    SSL_get_peer_quic_transport_params(ssl, &trapa_buf, &trapa_sz);
-#endif
+    trapa_buf = enc_sess->transport_buf;
+    trapa_sz = enc_sess->transport_buf_sz;
+
     if (trapa_buf == NULL)
     {
         LSQ_WARN("no transport parameters: cannot generate session "
@@ -3076,8 +3183,9 @@ no_sess_ticket (enum alarm_id alarm_id, void *ctx,
 
 static int
 set_secret (SSL *ssl, int prot_level,
-    const SSL_CIPHER *cipher, const uint8_t *secret, size_t secret_len, int rw)
+    const uint8_t *secret, size_t secret_len, int rw)
 {
+    const SSL_CIPHER *cipher = SSL_get_current_cipher(ssl);
     struct enc_sess_iquic *enc_sess;
     struct crypto_ctx_pair *pair;
     struct header_prot *hp;

@@ -95,8 +95,10 @@ load_cert (struct lsquic_hash *certs, const char *optarg)
     SSL_CTX_set_alpn_select_cb(cert->ce_ssl_ctx, select_alpn, NULL);
     {
         const char *const s = getenv("LSQUIC_ENABLE_EARLY_DATA");
+#ifdef HAVE_BORINGSSL
         if (!s || atoi(s))
             SSL_CTX_set_early_data_enabled(cert->ce_ssl_ctx, 1);    /* XXX */
+#endif
     }
     if (1 != SSL_CTX_use_certificate_chain_file(cert->ce_ssl_ctx, cert_file))
     {

@@ -514,7 +514,9 @@ prog_init_ssl_ctx (struct prog *prog)
     {
         SSL_CTX_set_session_cache_mode(prog->prog_ssl_ctx,
                                                     SSL_SESS_CACHE_CLIENT);
+#ifdef HAVE_BORINGSSL
         SSL_CTX_set_early_data_enabled(prog->prog_ssl_ctx, 1);
+#endif
         SSL_CTX_sess_set_new_cb(prog->prog_ssl_ctx, prog_new_session_cb);
     }
 

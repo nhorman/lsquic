@@ -14,7 +14,10 @@
 #include <getopt.h>
 #endif
 
+#ifdef HAVE_BORINGSSL
 #include <openssl/aead.h>
+#endif
+
 #include <openssl/rand.h>
 
 #include "lsquic_crypto.h"

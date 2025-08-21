@@ -252,6 +252,7 @@ int lsquic_hkdf_extract(uint8_t *out_key, size_t *out_len,
 
     *p = OSSL_PARAM_construct_end();
 
+    *out_len = EVP_MD_get_size(digest);
     ret = EVP_KDF_derive(ctx, out_key, *out_len, params);
     EVP_KDF_CTX_free(ctx);
     return ret;

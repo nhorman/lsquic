@@ -485,8 +485,6 @@ prog_new_session_cb (SSL *ssl, SSL_SESSION *session)
 static int
 prog_init_ssl_ctx (struct prog *prog)
 {
-    unsigned char ticket_keys[48];
-
     prog->prog_ssl_ctx = SSL_CTX_new(TLS_method());
     if (!prog->prog_ssl_ctx)
     {
@@ -497,15 +495,6 @@ prog_init_ssl_ctx (struct prog *prog)
     SSL_CTX_set_min_proto_version(prog->prog_ssl_ctx, TLS1_3_VERSION);
     SSL_CTX_set_max_proto_version(prog->prog_ssl_ctx, TLS1_3_VERSION);
     SSL_CTX_set_default_verify_paths(prog->prog_ssl_ctx);
-
-    /* This is obviously test code: the key is just an array of NUL bytes */
-    memset(ticket_keys, 0, sizeof(ticket_keys));
-    if (1 != SSL_CTX_set_tlsext_ticket_keys(prog->prog_ssl_ctx,
-                                        ticket_keys, sizeof(ticket_keys)))
-    {
-        LSQ_ERROR("SSL_CTX_set_tlsext_ticket_keys failed");
-        return -1;
-    }
 
     if (s_keylog_dir)
         SSL_CTX_set_keylog_callback(prog->prog_ssl_ctx, keylog_log_line);

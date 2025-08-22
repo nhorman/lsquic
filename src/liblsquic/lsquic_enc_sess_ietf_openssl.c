@@ -1146,6 +1146,12 @@ iquic_esfi_create_client (const char *hostname,
     SSL_set_bio(enc_sess->esi_ssl, ossl_bio, ossl_bio);
     ossl_bio = NULL;
 
+    if (!SSL_set_quic_tls_cbs(enc_sess->esi_ssl, cry_quic_dispatch, NULL))
+    {
+        LSQ_INFO("could not set stream method");
+        goto err;
+    }
+
 #if BORINGSSL_API_VERSION >= 13
     SSL_set_quic_use_legacy_codepoint(enc_sess->esi_ssl,
                             enc_sess->esi_ver_neg->vn_ver < LSQVER_I001);
@@ -1163,12 +1169,6 @@ iquic_esfi_create_client (const char *hostname,
     {
         LSQ_ERROR("cannot set QUIC transport params: %s",
             ERR_error_string(ERR_get_error(), errbuf));
-        goto err;
-    }
-
-    if (!SSL_set_quic_tls_cbs(enc_sess->esi_ssl, cry_quic_dispatch, NULL))
-    {
-        LSQ_INFO("could not set stream method");
         goto err;
     }
 

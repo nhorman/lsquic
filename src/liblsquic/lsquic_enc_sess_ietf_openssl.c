@@ -1417,7 +1417,9 @@ setup_handshake_keys (struct enc_sess_iquic *enc_sess, const lsquic_cid_t *cid)
     }
     for (i = 0; i < 2; ++i)
     {
-        if (EVP_EncryptInit_ex(hp->hp_u.cipher_ctx[i], cipher, NULL, key[i], 0))
+        hp->hp_u.cipher_ctx[i] = EVP_CIPHER_CTX_new();
+        if (hp->hp_u.cipher_ctx[i] != NULL 
+            && EVP_EncryptInit_ex(hp->hp_u.cipher_ctx[i], cipher, NULL, key[i], 0))
             hp->hp_flags |= 1 << i;
         else
         {
@@ -1442,8 +1444,10 @@ cleanup_hp (struct header_prot *hp)
 
     if (hp->hp_gen_mask == gen_hp_mask_aes)
         for (rw = 0; rw < 2; ++rw)
-            if (hp->hp_flags & (1 << rw))
+            if (hp->hp_flags & (1 << rw)) {
                 (void) EVP_CIPHER_CTX_free(hp->hp_u.cipher_ctx[rw]);
+                hp->hp_u.cipher_ctx[rw] = NULL;
+            }
 }
 
 

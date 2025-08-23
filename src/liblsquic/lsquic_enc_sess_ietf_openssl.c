@@ -898,13 +898,15 @@ static int quic_tls_send(SSL *s, const unsigned char *data, size_t len,
                          size_t *consumed, void *arg)
 {
     struct enc_sess_iquic *enc_sess;
-    int level = enc_sess->esi_last_w;
+    int level;
     void *stream;
     ssize_t nw;
 
     enc_sess = SSL_get_ex_data(s, s_idx);
     if (!enc_sess)
         return 0;
+
+    level = enc_sess->esi_last_w;
 
     stream = enc_sess->esi_streams[level];
     if (!stream)
@@ -992,7 +994,7 @@ static int quic_tls_got_tp(SSL *s, const unsigned char *params, size_t params_le
     return 1;
 }
 
-static int quic_tls_alert(SSL *s, unsigned char *alert_code, void *arg)
+static int quic_tls_alert(SSL *s, unsigned char alert_code, void *arg)
 {
     struct enc_sess_iquic *enc_sess;
 
@@ -1000,8 +1002,8 @@ static int quic_tls_alert(SSL *s, unsigned char *alert_code, void *arg)
     if (!enc_sess)
         return 0;
 
-    LSQ_INFO("got alert %"PRIu8, *alert_code);
-    enc_sess->esi_conn->cn_if->ci_tls_alert(enc_sess->esi_conn, *alert_code);
+    LSQ_INFO("got alert %"PRIu8, alert_code);
+    enc_sess->esi_conn->cn_if->ci_tls_alert(enc_sess->esi_conn, alert_code);
 
     return 1;
 }
